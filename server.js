@@ -426,7 +426,6 @@ app.delete('/api/removewishlist/:userId/:gameId', asyncHandler(async (req, res) 
 
 
 
-
 // Route to retrieve collection items for MyCollection page
 app.get('/api/mycollection/:userId', asyncHandler(async (req, res) => {
     const userId = req.params.userId;
@@ -467,6 +466,9 @@ app.get('/api/check-gamedetails/:userId/:gameId', asyncHandler(async (req, res) 
 
     try {
         const result = await checkGameDetails(userId, gameId);
+
+        console.log('Result: ', result);
+
         res.json({ hasDetails: result });
     } catch (error) {
         console.error('Error checking GameDetails:', error.message);
@@ -500,8 +502,8 @@ app.get('/api/game-info/:gameId', asyncHandler(async (req, res) => {
         const gameDetails = await getGameDetails(gameId);
 
         if (gameDetails) {
-            // Convert CoverArt to Base64
-            gameDetails.CoverArt = gameDetails.CoverArt ? gameDetails.CoverArt.toString('base64') : null;
+            // Directly use the stored Base64 string
+            console.log('Game Details result: ', gameDetails);
             res.json({ gameDetails });
         } else {
             res.status(404).json({ error: 'Game not found' });
@@ -511,6 +513,7 @@ app.get('/api/game-info/:gameId', asyncHandler(async (req, res) => {
         res.status(500).json({ error: 'Error fetching game details.' });
     }
 }));
+
 
 // Function to get game details by gameId
 async function getGameDetails(gameId) {
