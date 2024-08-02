@@ -467,8 +467,6 @@ app.get('/api/check-gamedetails/:userId/:gameId', asyncHandler(async (req, res) 
     try {
         const result = await checkGameDetails(userId, gameId);
 
-        console.log('Result: ', result);
-
         res.json({ hasDetails: result });
     } catch (error) {
         console.error('Error checking GameDetails:', error.message);
@@ -503,7 +501,6 @@ app.get('/api/game-info/:gameId', asyncHandler(async (req, res) => {
 
         if (gameDetails) {
             // Directly use the stored Base64 string
-            console.log('Game Details result: ', gameDetails);
             res.json({ gameDetails });
         } else {
             res.status(404).json({ error: 'Game not found' });
@@ -552,50 +549,63 @@ app.post('/api/add-game-details/:userId/:gameId', asyncHandler(async (req, res) 
 }));
 
 // Function to add game details to a game in the collection
-async function addGameDetails(userId, gameId, gameDetails) {
+async function addGameDetails(userid, gameid, gameDetails) {
     const { ownership, included, checkboxes, notes, completion, review, spoiler, price, rating } = gameDetails.gameDetails;
 
     // Assuming 'checkboxes' is an array of checkbox values, convert to a string
-    const checkboxesString = Array.isArray(checkboxes) ? checkboxes.join(',') : checkboxes;
+    const checkboxesString = Array.isArray(checkboxes) ? checkboxes.join(', ') : checkboxes;
 
-    const { data: gameDetailsData, error: gameDetailsError } = await supabase
-        .from('GameDetails')
-        .insert({
-            Ownership: ownership,
-            Included: included,
-            Condition: checkboxesString,
-            Notes: notes,
-            Completion: completion,
-            Review: review,
-            Spoiler: spoiler,
-            Price: price,
-            Rating: rating
-        })
-        .select('gamedetailsid')
-        .single();
+    // Convert boolean values to 0 or 1
+    const spoilerValue = spoiler ? 1 : 0;
 
-    if (gameDetailsError) {
-        console.error('Error adding game details:', gameDetailsError.message);
-        throw gameDetailsError;
+    try {
+        // Insert game details
+        const { data: gameDetailsData, error: gameDetailsError } = await supabase
+            .from('gamedetails')
+            .insert({
+                ownership: ownership,
+                included: included,
+                condition: checkboxesString,
+                notes: notes,
+                completion: completion,
+                review: review,
+                spoiler: spoilerValue,
+                price: price,
+                rating: rating
+            })
+            .select('gamedetailsid')
+            .single();
+
+        if (gameDetailsError) {
+            console.error('Error adding game details:', gameDetailsError);
+            throw new Error(`Error adding game details: ${gameDetailsError.message}`);
+        }
+
+        const { gamedetailsid } = gameDetailsData;
+
+        // Insert into vgcollection
+        const { data: vgCollectionData, error: vgCollectionError } = await supabase
+            .from('vgcollection')
+            .insert({
+                userid: userid,
+                gameid: gameid,
+                gamedetailsid: gamedetailsid
+            })
+            .select();  // Add select() to return inserted data
+
+        if (vgCollectionError) {
+            console.error('Error adding VGCollection record:', vgCollectionError);
+            throw new Error(`Error adding VGCollection record: ${vgCollectionError.message}`);
+        }
+
+        return vgCollectionData !== null;
+    } catch (error) {
+        console.error('Error in addGameDetails function:', error);
+        throw error; // Propagate the error
     }
-
-    const { GameDetailsId } = gameDetailsData;
-
-    const { data: vgCollectionData, error: vgCollectionError } = await supabase
-        .from('vgcollection')
-        .insert({
-            UserId: userId,
-            GameId: gameId,
-            GameDetailsId: gamedetailsid
-        });
-
-    if (vgCollectionError) {
-        console.error('Error adding VGCollection record:', vgCollectionError.message);
-        throw vgCollectionError;
-    }
-
-    return vgCollectionData.length > 0;
 }
+
+
 
 
 
