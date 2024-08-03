@@ -431,8 +431,6 @@ app.get('/api/mycollection/:userId', asyncHandler(async (req, res) => {
     const userId = req.params.userId;
     try {
         const results = await getCollectionItems(userId);
-        // Convert CoverArt to Base64
-        results.forEach(game => game.CoverArt = game.CoverArt ? game.CoverArt.toString('base64') : null);
         res.json({ results });
     } catch (error) {
         console.error('Error fetching collection items:', error.message);
@@ -444,7 +442,7 @@ app.get('/api/mycollection/:userId', asyncHandler(async (req, res) => {
 async function getCollectionItems(userId) {
     const { data, error } = await supabase
         .from('vgcollection')
-        .select('gameinfo(gameid, name, coverArt, console)')
+        .select('gameinfo(gameid, name, coverart, console)')
         .eq('userid', userId);
 
     if (error) {
@@ -452,13 +450,15 @@ async function getCollectionItems(userId) {
         throw error;
     }
 
+    // No need to convert coverArt to base64 if it's already stored as a string
     return data.map(item => ({
-        GameId: item.GameInfo.GameId,
-        Name: item.GameInfo.Name,
-        CoverArt: item.GameInfo.CoverArt ? item.GameInfo.CoverArt.toString('base64') : null,
-        Console: item.GameInfo.Console,
+        GameId: item.gameinfo.gameid,
+        Name: item.gameinfo.name,
+        CoverArt: item.gameinfo.coverart,  // Directly use the coverArt
+        Console: item.gameinfo.console,
     }));
 }
+
 
 // Navigation from Search to check if the game details already exist for the game in collection
 app.get('/api/check-gamedetails/:userId/:gameId', asyncHandler(async (req, res) => {
@@ -621,10 +621,10 @@ app.delete('/api/removecollection/:userId/:gameId', asyncHandler(async (req, res
     const gameId = req.params.gameId;
 
     try {
-        // Check if the game is in the user's collection
+        // Fetch collection data for the game
         const { data: collectionData, error: collectionError } = await supabase
             .from('vgcollection')
-            .select('vgcollectionId, gamedetailsid')
+            .select('collectionid, gamedetailsid') // Ensure correct field names
             .eq('userid', userId)
             .eq('gameid', gameId)
             .single();
@@ -635,16 +635,23 @@ app.delete('/api/removecollection/:userId/:gameId', asyncHandler(async (req, res
         }
 
         if (collectionData) {
-            const vgCollectionId = collectionData.VGCollectionId;
-            const gameDetailsId = collectionData.GameDetailsId;
+            const vgCollectionId = collectionData.collectionid; // Check field name case
+            const gameDetailsId = collectionData.gamedetailsid; // Check field name case
 
-            // Remove the game from VGCollection
-            await removeGameFromCollection(userId, gameId);
+            console.log(`Fetched collection data: VGCollectionId=${vgCollectionId}, GameDetailsId=${gameDetailsId}`);
 
-            // Remove the associated GameDetails record
-            await removeGameDetails(gameDetailsId);
+            if (vgCollectionId && gameDetailsId) {
+                // Remove the game from VGCollection
+                await removeGameFromCollection(userId, gameId);
 
-            res.status(200).json({ message: 'Game removed successfully' });
+                // Remove the associated GameDetails record
+                await removeGameDetails(gameDetailsId);
+
+                res.status(200).json({ message: 'Game removed successfully' });
+            } else {
+                console.warn('No valid VGCollectionId or GameDetailsId found');
+                res.status(404).json({ error: 'Invalid collection data' });
+            }
         } else {
             res.status(404).json({ error: 'Game not found in the collection' });
         }
@@ -670,6 +677,11 @@ async function removeGameFromCollection(userId, gameId) {
 
 // Function to remove a GameDetails record
 async function removeGameDetails(gameDetailsId) {
+    if (!gameDetailsId) {
+        console.error('Invalid gameDetailsId:', gameDetailsId);
+        throw new Error('Invalid gameDetailsId');
+    }
+    
     const { error } = await supabase
         .from('gamedetails')
         .delete()
@@ -680,6 +692,7 @@ async function removeGameDetails(gameDetailsId) {
         throw error;
     }
 }
+
 
 
 
