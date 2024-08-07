@@ -732,6 +732,13 @@ app.get('/api/get-game-details/:userId/:gameId', asyncHandler(async (req, res) =
         }
 
         if (data) {
+            console.log('This is the condition before: ', data.gamedetails.condition);
+            //Put condition string back into an array
+            if (data.gamedetails.condition) {
+                data.gamedetails.condition = data.gamedetails.condition.split(', ').map(item => item.trim());
+            }
+            console.log('This is the condition after: ', data.gamedetails.condition);
+
             // No need to convert CoverArt to Base64, it's already in Base64
             console.log("Fetched game details:", data); // Log the fetched data for debugging
             res.json({ gameDetails: data });
