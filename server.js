@@ -22,11 +22,11 @@ app.use(fileUpload());
 //eventual method
 const corsOptions = {
     origin: 'http://localhost:5173', // replace with your frontend URL
-    methods: ['GET', 'POST', 'DELETE'],
+    methods: ['GET', 'POST', 'DELETE', 'PUT'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-  };
+};
 
-  app.use(cors(corsOptions));
+app.use(cors(corsOptions));
 
 app.use(express.json());
 
@@ -601,14 +601,9 @@ async function addGameDetails(userid, gameid, gameDetails) {
         return vgCollectionData !== null;
     } catch (error) {
         console.error('Error in addGameDetails function:', error);
-        throw error; // Propagate the error
+        throw error;
     }
 }
-
-
-
-
-
 
 
 
@@ -624,7 +619,7 @@ app.delete('/api/removecollection/:userId/:gameId', asyncHandler(async (req, res
         // Fetch collection data for the game
         const { data: collectionData, error: collectionError } = await supabase
             .from('vgcollection')
-            .select('collectionid, gamedetailsid') // Ensure correct field names
+            .select('collectionid, gamedetailsid')
             .eq('userid', userId)
             .eq('gameid', gameId)
             .single();
@@ -635,8 +630,8 @@ app.delete('/api/removecollection/:userId/:gameId', asyncHandler(async (req, res
         }
 
         if (collectionData) {
-            const vgCollectionId = collectionData.collectionid; // Check field name case
-            const gameDetailsId = collectionData.gamedetailsid; // Check field name case
+            const vgCollectionId = collectionData.collectionid;
+            const gameDetailsId = collectionData.gamedetailsid;
 
             console.log(`Fetched collection data: VGCollectionId=${vgCollectionId}, GameDetailsId=${gameDetailsId}`);
 
@@ -681,7 +676,7 @@ async function removeGameDetails(gameDetailsId) {
         console.error('Invalid gameDetailsId:', gameDetailsId);
         throw new Error('Invalid gameDetailsId');
     }
-    
+
     const { error } = await supabase
         .from('gamedetails')
         .delete()
@@ -694,6 +689,158 @@ async function removeGameDetails(gameDetailsId) {
 }
 
 
+
+
+
+
+app.get('/api/get-game-details/:userId/:gameId', asyncHandler(async (req, res) => {
+    const userId = req.params.userId;
+    const gameId = req.params.gameId;
+
+    console.log("Fetching game details for user:", userId, "and game:", gameId);
+
+    try {
+        // Fetch game details based on gameId for a specific user using Supabase
+        const { data, error } = await supabase
+            .from('vgcollection')
+            .select(`
+                gameinfo (
+                    gameid,
+                    name,
+                    coverart,
+                    console
+                ),
+                gamedetails (
+                    ownership,
+                    included,
+                    condition,
+                    notes,
+                    price,
+                    completion,
+                    rating,
+                    review,
+                    spoiler
+                )
+            `)
+            .eq('gameid', gameId)
+            .eq('userid', userId)
+            .single();
+
+        if (error) {
+            console.error('Error fetching game details:', error.message);
+            return res.status(500).json({ error: 'Error fetching game details.' });
+        }
+
+        if (data) {
+            // No need to convert CoverArt to Base64, it's already in Base64
+            console.log("Fetched game details:", data); // Log the fetched data for debugging
+            res.json({ gameDetails: data });
+        } else {
+            res.status(404).json({ error: 'Game details not found' });
+        }
+    } catch (error) {
+        console.error('Error fetching game details:', error.message);
+        res.status(500).json({ error: 'Error fetching game details.' });
+    }
+}));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Add this new route to your server code
+app.put('/api/edit-game-details/:userId/:gameId', async (req, res) => {
+    const userId = parseInt(req.params.userId, 10);
+    const gameId = parseInt(req.params.gameId, 10);
+    const gameDetails = req.body;
+
+    try {
+        // Call the editGameDetails function with the provided parameters
+        const success = await editGameDetails(userId, gameId, gameDetails);
+
+        if (success) {
+            res.status(200).json({ message: 'Game details updated successfully' });
+        } else {
+            res.status(500).json({ message: 'Failed to update game details' });
+        }
+    } catch (error) {
+        console.error('Error updating game details:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Function to update game details
+async function editGameDetails(userId, gameId, gameDetails) {
+    const { ownership, included, checkboxes, notes, gameCompletion: completion, review, spoilerWarning: spoiler, pricePaid: price, rating } = gameDetails;
+
+    // Convert checkboxes to a string to store in the database
+    const checkboxesString = Array.isArray(checkboxes) ? checkboxes.join(',') : checkboxes;
+    const spoilerValue = spoiler ? 1 : 0;
+
+    try {
+        // Retrieve gamedetailsid from vgcollection
+        const { data: vgcollectionData, error: vgcollectionError } = await supabase
+            .from('vgcollection')
+            .select('gamedetailsid')
+            .eq('userid', userId)
+            .eq('gameid', gameId)
+            .single();
+
+        if (vgcollectionError || !vgcollectionData) {
+            console.error('Error fetching gamedetailsid:', vgcollectionError?.message || 'No data found');
+            return false;
+        }
+
+        const gamedetailsid = vgcollectionData.gamedetailsid;
+
+        // Update the gamedetails
+        const { data: updateData, error: updateError } = await supabase
+            .from('gamedetails')
+            .update({
+                ownership,
+                included,
+                condition: checkboxesString,
+                notes,
+                completion,
+                review,
+                spoiler: spoilerValue,
+                price,
+                rating
+            })
+            .eq('gamedetailsid', gamedetailsid);
+
+        if (updateError) {
+            console.error('Error updating game details:', updateError.message);
+            return false;
+        }
+
+        console.log('Update result:', updateData);
+
+        // Check if the update operation reported any affected rows or returned data
+        if (updateData !== null) {
+            return true;
+        } else {
+            return true;  // Treat as successful if no error was reported
+        }
+    } catch (error) {
+        console.error('Unexpected error updating game details:', error.message);
+        return false;
+    }
+}
 
 
 
