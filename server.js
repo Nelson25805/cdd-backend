@@ -735,7 +735,7 @@ app.get('/api/get-game-details/:userId/:gameId', asyncHandler(async (req, res) =
             console.log('This is the condition before: ', data.gamedetails.condition);
             //Put condition string back into an array
             if (data.gamedetails.condition) {
-                data.gamedetails.condition = data.gamedetails.condition.split(', ').map(item => item.trim());
+                data.gamedetails.condition = data.gamedetails.condition.split(',').map(item => item.trim());
             }
             console.log('This is the condition after: ', data.gamedetails.condition);
 
