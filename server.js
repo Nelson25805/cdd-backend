@@ -854,6 +854,198 @@ async function editGameDetails(userId, gameId, gameDetails) {
 
 
 
+app.get('/api/reports/:reportType', async (req, res) => {
+    try {
+        console.log("Received request for report type:", req.params.reportType);
+        const reportTypes = req.params.reportType.split(','); // Split the report types
+        const results = {};
+
+        // Process each report type
+        for (const reportType of reportTypes) {
+            console.log(`Processing report type: ${reportType}`);
+
+            // Total Users
+            if (reportType === 'TotalUsers') {
+                const { data: totalUsersData, error: totalUsersError } = await supabase
+                    .from('useraccount')
+                    .select('userid', { count: 'exact' });
+
+                if (totalUsersError) throw totalUsersError;
+                results.totalUsers = { count: totalUsersData.length };
+            }
+
+            // Total Collections
+            if (reportType === 'TotalCollections') {
+                const { data: totalCollectionsData, error: totalCollectionsError } = await supabase
+                    .from('vgcollection')
+                    .select('collectionid', { count: 'exact' });
+
+                if (totalCollectionsError) throw totalCollectionsError;
+                results.totalCollections = { count: totalCollectionsData.length };
+            }
+
+            // Most Collected Game
+            if (reportType === 'MostCollectedGame') {
+                const { data: vgCollectionData, error: vgCollectionError } = await supabase
+                    .from('vgcollection')
+                    .select('gameid');
+
+                if (vgCollectionError) throw vgCollectionError;
+
+                // Count occurrences of each gameid
+                const gameCount = {};
+                vgCollectionData.forEach(({ gameid }) => {
+                    gameCount[gameid] = (gameCount[gameid] || 0) + 1;
+                });
+
+                // Find the gameid with the highest count
+                let mostCollectedGameId = null;
+                let maxCount = 0;
+                for (const gameid in gameCount) {
+                    if (gameCount[gameid] > maxCount) {
+                        maxCount = gameCount[gameid];
+                        mostCollectedGameId = gameid;
+                    }
+                }
+
+                if (mostCollectedGameId) {
+                    const { data: mostCollectedGame, error: mostCollectedGameError } = await supabase
+                        .from('gameinfo')
+                        .select('*')
+                        .eq('gameid', mostCollectedGameId)
+                        .single();
+
+                    if (mostCollectedGameError) throw mostCollectedGameError;
+                    results.mostCollectedGame = {
+                        ...mostCollectedGame,
+                        count: maxCount
+                    };
+                } else {
+                    results.mostCollectedGame = { count: 0 };
+                }
+            }
+
+            // Highest Reviewed Game
+            if (reportType === 'HighestReviewedGame') {
+                // Step 1: Fetch the highest rating from gamedetails
+                const { data: highestRatingData, error: highestRatingError } = await supabase
+                    .from('gamedetails')
+                    .select('rating, gamedetailsid')
+                    .order('rating', { ascending: false })
+                    .limit(1);
+
+                if (highestRatingError) throw highestRatingError;
+
+                // Extract the highest rating and corresponding gamedetailsid
+                const highestRating = highestRatingData[0]?.rating;
+                const highestGamedetailsId = highestRatingData[0]?.gamedetailsid;
+
+                if (highestGamedetailsId) {
+                    // Step 2: Find the gameid related to the highest-rated gamedetailsid
+                    const { data: gameIdData, error: gameIdError } = await supabase
+                        .from('vgcollection')
+                        .select('gameid')
+                        .eq('gamedetailsid', highestGamedetailsId)
+                        .limit(1);
+
+                    if (gameIdError) throw gameIdError;
+
+                    const gameId = gameIdData[0]?.gameid;
+
+                    if (gameId) {
+                        // Step 3: Fetch the game details from gameinfo using gameid
+                        const { data: gameInfoData, error: gameInfoError } = await supabase
+                            .from('gameinfo')
+                            .select('*')
+                            .eq('gameid', gameId)
+                            .single();
+
+                        if (gameInfoError) throw gameInfoError;
+
+                        // Combine the rating with the game info
+                        results.highestReviewedGame = {
+                            ...gameInfoData,
+                            rating: highestRating
+                        };
+                    } else {
+                        results.highestReviewedGame = { name: 'N/A', rating: 'N/A' };  // Default if no game found
+                    }
+                } else {
+                    results.highestReviewedGame = { name: 'N/A', rating: 'N/A' };  // Default if no rating found
+                }
+            }
+
+
+
+            // Most Wanted Game
+            if (reportType === 'MostWantedGame') {
+                // Fetch all wishlist entries
+                const { data: wishlistData, error: wishlistError } = await supabase
+                    .from('vgwishlist')
+                    .select('gameid');
+
+                if (wishlistError) throw wishlistError;
+
+                // Count occurrences of each gameid
+                const gameCount = {};
+                wishlistData.forEach(({ gameid }) => {
+                    gameCount[gameid] = (gameCount[gameid] || 0) + 1;
+                });
+
+                // Find the gameid with the highest count
+                let mostWantedGameId = null;
+                let maxCount = 0;
+                for (const gameid in gameCount) {
+                    if (gameCount[gameid] > maxCount) {
+                        maxCount = gameCount[gameid];
+                        mostWantedGameId = gameid;
+                    }
+                }
+
+                if (mostWantedGameId) {
+                    // Fetch details of the most wanted game
+                    const { data: mostWantedGame, error: mostWantedGameError } = await supabase
+                        .from('gameinfo')
+                        .select('*')
+                        .eq('gameid', mostWantedGameId)
+                        .single();
+
+                    if (mostWantedGameError) throw mostWantedGameError;
+                    results.mostWantedGame = {
+                        ...mostWantedGame,
+                        count: maxCount  // Include the count in the response
+                    };
+                } else {
+                    results.mostWantedGame = { count: 0 };  // Default to 0 if no game found
+                }
+            }
+
+
+            // Total Wishlists
+            if (reportType === 'TotalWishlists') {
+                const { data: totalWishlistsData, error: totalWishlistsError } = await supabase
+                    .from('vgwishlist')
+                    .select('*', { count: 'exact' });
+
+                if (totalWishlistsError) throw totalWishlistsError;
+                results.totalWishlists = { count: totalWishlistsData.length };
+            }
+        }
+
+        res.json(results);
+    } catch (error) {
+        console.error('Error fetching reports:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+
+
+
+
+
+
+
 
 
 
