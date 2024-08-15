@@ -1052,6 +1052,159 @@ app.get('/api/reports/:reportType', async (req, res) => {
 
 
 
+app.put('/api/update-username/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { newUsername } = req.body;
+
+    try {
+        // Update the username in the Supabase UserAccount table
+        const { data, error } = await supabase
+            .from('useraccount')
+            .update({ username: newUsername })
+            .eq('userid', parseInt(userId)); // Ensure userId is the correct type
+
+        // Log the data and error for debugging
+        console.log('Update Data:', data);
+        console.log('Update Error:', error);
+
+        if (error) {
+            throw error;
+        }
+
+        // If `data` is null, but no error, assume success
+        if (data === null) {
+            res.status(200).json({ message: 'Username updated successfully' });
+        } else {
+            res.status(404).json({ error: 'Username update has an error' });
+        }
+    } catch (error) {
+        console.error('Error updating username:', error.message);
+        res.status(500).json({ error: 'Error updating username' });
+    }
+}));
+
+
+
+
+
+
+// Check if username exists
+app.get('/api/check-username/:username', asyncHandler(async (req, res) => {
+    const { username } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('useraccount')
+            .select('username')
+            .eq('username', username);
+
+        if (error) throw error;
+
+        const exists = data.length > 0;
+        res.json({ exists });
+    } catch (error) {
+        console.error('Error checking username:', error.message);
+        res.status(500).json({ error: 'Error checking username' });
+    }
+}));
+
+
+// Update password
+app.put('/api/update-password/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { newPassword } = req.body;
+
+    try {
+        // Hash the new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        // Update the password in the Supabase UserAccount table
+        const { data, error } = await supabase
+            .from('useraccount')
+            .update({ password: hashedPassword })
+            .eq('userid', userId);
+
+
+
+
+
+
+
+
+        if (error) throw error;
+
+        if (data === null) {
+            res.status(200).json({ message: 'Password updated successfully' });
+        } else {
+            res.status(404).json({ error: 'User not found or password unchanged' });
+        }
+    } catch (error) {
+        console.error('Error updating password:', error.message);
+        res.status(500).json({ error: 'Error updating password' });
+    }
+}));
+
+
+// Update email
+app.put('/api/update-email/:userId', asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { newEmail } = req.body;
+
+    try {
+        // Update the email in the Supabase UserAccount table
+        const { data, error } = await supabase
+            .from('useraccount')
+            .update({ email: newEmail })
+            .eq('userid', userId);
+
+        if (error) throw error;
+
+        if (data === null ) {
+            res.status(200).json({ message: 'Email updated successfully' });
+        } else {
+            res.status(404).json({ error: 'User not found or email unchanged' });
+        }
+    } catch (error) {
+        console.error('Error updating email:', error.message);
+        res.status(500).json({ error: 'Error updating email' });
+    }
+}));
+
+
+// Check if email exists
+app.get('/api/check-email/:email', asyncHandler(async (req, res) => {
+    const { email } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('useraccount')
+            .select('email')
+            .eq('email', email);
+
+        if (error) throw error;
+
+        const exists = data.length > 0;
+        res.json({ exists });
+    } catch (error) {
+        console.error('Error checking email:', error.message);
+        res.status(500).json({ error: 'Error checking email' });
+    }
+}));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Protected route example (use this structure for a "protected route")
 app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
