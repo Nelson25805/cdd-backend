@@ -19,6 +19,13 @@ app.use(fileUpload());
 //basic one
 //app.use(cors());
 
+// Example Express middleware for debugging
+app.use((req, res, next) => {
+    console.log("Authorization Header:", req.headers.authorization);
+    next();
+});
+
+
 //eventual method
 const corsOptions = {
     origin: 'http://localhost:5173', // replace with your frontend URL
@@ -58,7 +65,7 @@ passport.use(new JWTStrategy(jwtOptions, async (jwtPayload, done) => {
         const { data: user, error } = await supabase
             .from('useraccount')
             .select('*')
-            .eq('id', jwtPayload.userId)
+            .eq('userid', jwtPayload.userId)
             .single();
 
         if (error) {
@@ -78,11 +85,52 @@ passport.use(new JWTStrategy(jwtOptions, async (jwtPayload, done) => {
 // Function to generate JWT token
 const generateToken = (user) => {
     return jwt.sign(
-        { userId: user.id, username: user.username, email: user.email, admin: user.admin },
+        { userId: user.userid, username: user.username, admin: user.admin },
         process.env.JWT_SECRET,
         { expiresIn: '1h' }
     );
 };
+
+
+const generateRefreshToken = (user) => {
+    return jwt.sign(
+        { userId: user.userid },
+        process.env.REFRESH_TOKEN_SECRET,
+        { expiresIn: '7d' }
+    );
+};
+
+// Refresh token endpoint
+app.post('/api/token/refresh', asyncHandler(async (req, res) => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        return res.status(401).json({ error: 'Refresh token is required.' });
+    }
+
+    try {
+        // Verify the refresh token
+        const { userId } = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+
+        // Fetch user from Supabase
+        const { data: user, error } = await supabase
+            .from('useraccount')
+            .select('*')
+            .eq('id', userId)
+            .single();
+
+        if (error) throw error;
+
+        // Generate a new access token
+        const newAccessToken = generateToken(user);
+
+        res.json({ accessToken: newAccessToken });
+    } catch (error) {
+        console.error('Error refreshing token:', error.message);
+        res.status(403).json({ error: 'Invalid or expired refresh token.' });
+    }
+}));
+
 
 // Route for user registration
 app.post('/register', asyncHandler(async (req, res) => {
@@ -127,18 +175,22 @@ app.post('/register', asyncHandler(async (req, res) => {
             return res.status(404).json({ error: 'User not found after registration' });
         }
 
-        // Generate JWT token
+        // Generate JWT tokens
         const token = generateToken(newUser);
+        const refreshToken = generateRefreshToken(newUser);
 
-        // Return token and user data
-        res.status(201).json({ token, user: newUser });
+        console.log('Response:', { token, refreshToken, user: newUser });
 
+
+        // Return tokens and user data
+        res.status(201).json({ token, refreshToken, user: newUser });
 
     } catch (error) {
         console.error('Error during registration:', error.message);
         res.status(500).json({ error: 'Server error: ' + error.message });
     }
 }));
+
 
 // Login endpoint
 app.post('/login', asyncHandler(async (req, res) => {
@@ -167,11 +219,13 @@ app.post('/login', asyncHandler(async (req, res) => {
             return res.status(401).json({ message: 'Invalid username or password' });
         }
 
-        // Generate JWT token
+        // Generate JWT tokens
         const token = generateToken(user);
 
+        const refreshToken = generateRefreshToken(user);
+
         console.log('Login successful');
-        res.status(200).json({ token, user });
+        res.status(200).json({ token, refreshToken, user });
 
     } catch (error) {
         console.error('Error during login:', error.message);
@@ -182,8 +236,9 @@ app.post('/login', asyncHandler(async (req, res) => {
 
 
 
+
 // Route to add a game into the GameInfo database
-app.post('/add-game-to-database', asyncHandler(async (req, res) => {
+app.post('/add-game-to-database', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { Name, Console } = req.body;
 
     try {
@@ -229,12 +284,8 @@ app.post('/add-game-to-database', asyncHandler(async (req, res) => {
 }));
 
 
-
-
-
-
 // Route for searching games based on a query
-app.get('/api/search', asyncHandler(async (req, res) => {
+app.get('/api/search', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const searchQuery = req.query.q;
 
     if (!searchQuery) {
@@ -245,7 +296,7 @@ app.get('/api/search', asyncHandler(async (req, res) => {
         const results = await searchGames(searchQuery);
         res.json({ results });
     } catch (error) {
-        console.error('Error searching games:', error.message);
+        console.error('Error searching games:', error); // Log the full error
         res.status(500).json({ error: 'Error searching games.' });
     }
 }));
@@ -286,7 +337,7 @@ async function searchGames(searchTerm) {
 
 
 // Add wishlist game to wishlist
-app.post('/api/add-to-wishlist/:userId/:gameId', asyncHandler(async (req, res) => {
+app.post('/api/add-to-wishlist/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId, gameId } = req.params;
 
     if (userId && gameId) {
@@ -326,7 +377,7 @@ app.post('/api/add-to-wishlist/:userId/:gameId', asyncHandler(async (req, res) =
 
 
 // Route to retrieve wishlist items for MyWishlist page
-app.get('/api/mywishlist/:userId', asyncHandler(async (req, res) => {
+app.get('/api/mywishlist/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const userId = req.params.userId;
     try {
         const results = await getWishlistItems(userId);
@@ -366,7 +417,7 @@ async function getWishlistItems(userId) {
 
 
 // Remove wishlist game from wishlist
-app.delete('/api/removewishlist/:userId/:gameId', asyncHandler(async (req, res) => {
+app.delete('/api/removewishlist/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId, gameId } = req.params;
 
     try {
@@ -418,16 +469,8 @@ app.delete('/api/removewishlist/:userId/:gameId', asyncHandler(async (req, res) 
 }));
 
 
-
-
-
-
-
-
-
-
 // Route to retrieve collection items for MyCollection page
-app.get('/api/mycollection/:userId', asyncHandler(async (req, res) => {
+app.get('/api/mycollection/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const userId = req.params.userId;
     try {
         const results = await getCollectionItems(userId);
@@ -461,7 +504,7 @@ async function getCollectionItems(userId) {
 
 
 // Navigation from Search to check if the game details already exist for the game in collection
-app.get('/api/check-gamedetails/:userId/:gameId', asyncHandler(async (req, res) => {
+app.get('/api/check-gamedetails/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId, gameId } = req.params;
 
     try {
@@ -492,7 +535,7 @@ async function checkGameDetails(userId, gameId) {
 }
 
 // Giving GameInfo to the GameDetails page for details addition
-app.get('/api/game-info/:gameId', asyncHandler(async (req, res) => {
+app.get('/api/game-info/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const gameId = req.params.gameId;
 
     try {
@@ -529,7 +572,7 @@ async function getGameDetails(gameId) {
 }
 
 // Adding Game Details + Game VGCollection Record
-app.post('/api/add-game-details/:userId/:gameId', asyncHandler(async (req, res) => {
+app.post('/api/add-game-details/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId, gameId } = req.params;
     const gameDetails = req.body;
 
@@ -611,7 +654,7 @@ async function addGameDetails(userid, gameid, gameDetails) {
 
 
 // Remove a game from the collection
-app.delete('/api/removecollection/:userId/:gameId', asyncHandler(async (req, res) => {
+app.delete('/api/removecollection/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const userId = req.params.userId;
     const gameId = req.params.gameId;
 
@@ -693,7 +736,7 @@ async function removeGameDetails(gameDetailsId) {
 
 
 
-app.get('/api/get-game-details/:userId/:gameId', asyncHandler(async (req, res) => {
+app.get('/api/get-game-details/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const userId = req.params.userId;
     const gameId = req.params.gameId;
 
@@ -752,25 +795,8 @@ app.get('/api/get-game-details/:userId/:gameId', asyncHandler(async (req, res) =
 }));
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Add this new route to your server code
-app.put('/api/edit-game-details/:userId/:gameId', async (req, res) => {
+app.put('/api/edit-game-details/:userId/:gameId', passport.authenticate('jwt', { session: false }), async (req, res) => {
     const userId = parseInt(req.params.userId, 10);
     const gameId = parseInt(req.params.gameId, 10);
     const gameDetails = req.body;
@@ -851,10 +877,7 @@ async function editGameDetails(userId, gameId, gameDetails) {
 
 
 
-
-
-
-app.get('/api/reports/:reportType', async (req, res) => {
+app.get('/api/reports/:reportType', passport.authenticate('jwt', { session: false }), async (req, res) => {
     try {
         console.log("Received request for report type:", req.params.reportType);
         const reportTypes = req.params.reportType.split(','); // Split the report types
@@ -1042,17 +1065,7 @@ app.get('/api/reports/:reportType', async (req, res) => {
 
 
 
-
-
-
-
-
-
-
-
-
-
-app.put('/api/update-username/:userId', asyncHandler(async (req, res) => {
+app.put('/api/update-username/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { newUsername } = req.body;
 
@@ -1089,7 +1102,7 @@ app.put('/api/update-username/:userId', asyncHandler(async (req, res) => {
 
 
 // Check if username exists
-app.get('/api/check-username/:username', asyncHandler(async (req, res) => {
+app.get('/api/check-username/:username', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { username } = req.params;
 
     try {
@@ -1110,7 +1123,7 @@ app.get('/api/check-username/:username', asyncHandler(async (req, res) => {
 
 
 // Update password
-app.put('/api/update-password/:userId', asyncHandler(async (req, res) => {
+app.put('/api/update-password/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { newPassword } = req.body;
 
@@ -1123,13 +1136,6 @@ app.put('/api/update-password/:userId', asyncHandler(async (req, res) => {
             .from('useraccount')
             .update({ password: hashedPassword })
             .eq('userid', userId);
-
-
-
-
-
-
-
 
         if (error) throw error;
 
@@ -1146,7 +1152,7 @@ app.put('/api/update-password/:userId', asyncHandler(async (req, res) => {
 
 
 // Update email
-app.put('/api/update-email/:userId', asyncHandler(async (req, res) => {
+app.put('/api/update-email/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { newEmail } = req.body;
 
@@ -1159,7 +1165,7 @@ app.put('/api/update-email/:userId', asyncHandler(async (req, res) => {
 
         if (error) throw error;
 
-        if (data === null ) {
+        if (data === null) {
             res.status(200).json({ message: 'Email updated successfully' });
         } else {
             res.status(404).json({ error: 'User not found or email unchanged' });
@@ -1172,7 +1178,7 @@ app.put('/api/update-email/:userId', asyncHandler(async (req, res) => {
 
 
 // Check if email exists
-app.get('/api/check-email/:email', asyncHandler(async (req, res) => {
+app.get('/api/check-email/:email', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { email } = req.params;
 
     try {
@@ -1190,9 +1196,6 @@ app.get('/api/check-email/:email', asyncHandler(async (req, res) => {
         res.status(500).json({ error: 'Error checking email' });
     }
 }));
-
-
-
 
 
 
