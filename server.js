@@ -181,9 +181,16 @@ app.post('/register', asyncHandler(async (req, res) => {
 
         console.log('Response:', { token, refreshToken, user: newUser });
 
+        // Create a new object with only the necessary properties
+        const safeUser = {
+            userid: newUser.userid,
+            username: newUser.username,
+            email: newUser.email,
+            admin: newUser.admin
+        };
 
         // Return tokens and user data
-        res.status(201).json({ token, refreshToken, user: newUser });
+        res.status(201).json({ token, refreshToken, user: safeUser });
 
     } catch (error) {
         console.error('Error during registration:', error.message);
@@ -212,6 +219,14 @@ app.post('/login', asyncHandler(async (req, res) => {
 
         const user = users[0];
 
+        // Create a new object with only the necessary properties
+        const safeUser = {
+            userid: user.userid,
+            username: user.username,
+            email: user.email,
+            admin: user.admin
+        };
+
         // Compare the password with the hashed password stored in the database
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) {
@@ -225,7 +240,7 @@ app.post('/login', asyncHandler(async (req, res) => {
         const refreshToken = generateRefreshToken(user);
 
         console.log('Login successful');
-        res.status(200).json({ token, refreshToken, user });
+        res.status(200).json({ token, refreshToken, user: safeUser });
 
     } catch (error) {
         console.error('Error during login:', error.message);
