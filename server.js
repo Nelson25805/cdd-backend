@@ -26,9 +26,16 @@ app.use((req, res, next) => {
 });
 
 
+// //eventual method
+// const corsOptions = {
+//     origin: 'http://localhost:5173', // replace with your frontend URL
+//     methods: ['GET', 'POST', 'DELETE', 'PUT'],
+//     allowedHeaders: ['Content-Type', 'Authorization'],
+// };
+
 //eventual method
 const corsOptions = {
-    origin: 'http://localhost:5173', // replace with your frontend URL
+    origin: 'https://cdd-frontend.vercel.app',
     methods: ['GET', 'POST', 'DELETE', 'PUT'],
     allowedHeaders: ['Content-Type', 'Authorization'],
 };
