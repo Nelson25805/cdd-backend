@@ -34,11 +34,34 @@ app.use((req, res, next) => {
 // };
 
 //eventual method
+// const corsOptions = {
+//     origin: 'https://cdd-frontend.vercel.app',
+//     methods: ['GET', 'POST', 'DELETE', 'PUT'],
+//     allowedHeaders: ['Content-Type', 'Authorization'],
+// };
+
+
+
+const allowedOrigins = [
+    'https://cdd-frontend.vercel.app', // Main link
+    'https://cdd-frontend-git-main-nelson-mcfadyens-projects.vercel.app', // Branch link
+    'https://cdd-frontend-fspta32lp-nelson-mcfadyens-projects.vercel.app' // Deployment link
+];
+
 const corsOptions = {
-    origin: 'https://cdd-frontend.vercel.app',
-    methods: ['GET', 'POST', 'DELETE', 'PUT'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    origin: (origin, callback) => {
+        if (allowedOrigins.includes(origin) || !origin) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true, // If you're using cookies, authorization headers, etc.
 };
+
+
+
 
 app.use(cors(corsOptions));
 
