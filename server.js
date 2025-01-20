@@ -27,11 +27,11 @@ app.use((req, res, next) => {
 
 
 // //eventual method
-// const corsOptions = {
-//     origin: 'http://localhost:5173', // replace with your frontend URL
-//     methods: ['GET', 'POST', 'DELETE', 'PUT'],
-//     allowedHeaders: ['Content-Type', 'Authorization'],
-// };
+const corsOptions = {
+    origin: 'http://localhost:5173', // replace with your frontend URL
+    methods: ['GET', 'POST', 'DELETE', 'PUT'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+};
 
 //eventual method
 // const corsOptions = {
@@ -48,17 +48,19 @@ const allowedOrigins = [
     'https://cdd-frontend-fspta32lp-nelson-mcfadyens-projects.vercel.app' // Deployment link
 ];
 
-const corsOptions = {
-    origin: (origin, callback) => {
-        if (allowedOrigins.includes(origin) || !origin) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true, // If you're using cookies, authorization headers, etc.
-};
+
+// I'm not sure which method this is
+// const corsOptions = {
+//     origin: (origin, callback) => {
+//         if (allowedOrigins.includes(origin) || !origin) {
+//             callback(null, true);
+//         } else {
+//             callback(new Error('Not allowed by CORS'));
+//         }
+//     },
+//     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+//     credentials: true, // If you're using cookies, authorization headers, etc.
+// };
 
 
 
