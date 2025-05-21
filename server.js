@@ -21,22 +21,22 @@ app.use(fileUpload());
 app.use(cookieParser());
 
 const allowedOrigins = [
-  'http://localhost:5173',                // dev
-  'https://cdd-frontend.vercel.app'       // prod
+    'http://localhost:5173',                // dev
+    'https://cdd-frontend.vercel.app'       // prod
 ];
 
 const corsOptions = {
-  origin: (incomingOrigin, callback) => {
-    // incomingOrigin will be undefined for server-to-server or Postman
-    if (!incomingOrigin || allowedOrigins.includes(incomingOrigin)) {
-      callback(null, true);
-    } else {
-      callback(new Error(`CORS origin ${incomingOrigin} not allowed`));
-    }
-  },
-  credentials: true,   // so cookies are accepted
-  methods: ['GET','POST','PUT','DELETE'],
-  allowedHeaders: ['Content-Type','Authorization']
+    origin: (incomingOrigin, callback) => {
+        // incomingOrigin will be undefined for server-to-server or Postman
+        if (!incomingOrigin || allowedOrigins.includes(incomingOrigin)) {
+            callback(null, true);
+        } else {
+            callback(new Error(`CORS origin ${incomingOrigin} not allowed`));
+        }
+    },
+    credentials: true,   // so cookies are accepted
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 };
 
 app.use(cors(corsOptions));
@@ -45,10 +45,10 @@ app.use(passport.initialize());
 
 // Logger for debugging
 app.use((req, res, next) => {
-  console.log(`${req.method} ${req.url}`);
-  console.log('Headers:', req.headers);
-  console.log('Cookies:', req.cookies);
-  next();
+    console.log(`${req.method} ${req.url}`);
+    console.log('Headers:', req.headers);
+    console.log('Cookies:', req.cookies);
+    next();
 });
 
 const PORT = process.env.PORT || 5000;
@@ -59,151 +59,149 @@ const asyncHandler = fn => (req, res, next) => Promise.resolve(fn(req, res, next
 
 // Passport JWT strategy
 passport.use(new JWTStrategy({
-  jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-  secretOrKey: process.env.JWT_SECRET,
+    jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+    secretOrKey: process.env.JWT_SECRET,
 }, async (payload, done) => {
-  try {
-    const { data: user, error } = await supabase
-      .from('useraccount')
-      .select('*')
-      .eq('userid', payload.userId)
-      .single();
+    try {
+        const { data: user, error } = await supabase
+            .from('useraccount')
+            .select('*')
+            .eq('userid', payload.userId)
+            .single();
 
-    if (error) return done(error, false);
-    return user ? done(null, user) : done(null, false);
-  } catch (err) {
-    done(err, false);
-  }
+        if (error) return done(error, false);
+        return user ? done(null, user) : done(null, false);
+    } catch (err) {
+        done(err, false);
+    }
 }));
 
 // Generate tokens
 const generateAccessToken = user => jwt.sign(
-  { userId: user.userid, username: user.username, admin: user.admin }, 
-  process.env.JWT_SECRET,
-  { expiresIn: '15m' }
+    { userId: user.userid, username: user.username, admin: user.admin },
+    process.env.JWT_SECRET,
+    { expiresIn: '15m' }
 );
 
 const generateRefreshToken = user => jwt.sign(
-  { userId: user.userid },
-  process.env.REFRESH_TOKEN_SECRET,
-  { expiresIn: '30d' }
+    { userId: user.userid },
+    process.env.REFRESH_TOKEN_SECRET,
+    { expiresIn: '30d' }
 );
 
 // Refresh token endpoint
 app.post('/api/token/refresh', asyncHandler(async (req, res) => {
-  const token = req.cookies.refreshToken;
-  if (!token) return res.status(401).json({ error: 'No refresh token provided.' });
+    const token = req.cookies.refreshToken;
+    if (!token) return res.status(401).json({ error: 'No refresh token provided.' });
 
-  try {
-    const { userId } = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
-    const { data: user, error } = await supabase
-      .from('useraccount')
-      .select('*')
-      .eq('userid', userId)
-      .single();
-    if (error || !user) throw error || new Error('User not found');
+    try {
+        const { userId } = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
+        const { data: user, error } = await supabase
+            .from('useraccount')
+            .select('*')
+            .eq('userid', userId)
+            .single();
+        if (error || !user) throw error || new Error('User not found');
 
-    const newAccessToken = generateAccessToken(user);
-    res.json({ accessToken: newAccessToken });
-  } catch (err) {
-    console.error('Refresh error:', err.message);
-    res.status(403).json({ error: 'Invalid or expired refresh token.' });
-  }
+        const newAccessToken = generateAccessToken(user);
+        res.json({ accessToken: newAccessToken });
+    } catch (err) {
+        console.error('Refresh error:', err.message);
+        res.status(403).json({ error: 'Invalid or expired refresh token.' });
+    }
 }));
 
 // Registration
 app.post('/register', asyncHandler(async (req, res) => {
-  const { username, email, password, admin } = req.body;
-  // check existing user
-  const { data: existing, error: existErr } = await supabase
-    .from('useraccount')
-    .select('email')
-    .eq('email', email);
-  if (existErr) throw existErr;
-  if (existing.length) return res.status(400).json({ error: 'Email in use.' });
+    const { username, email, password, admin } = req.body;
+    // check existing user
+    const { data: existing, error: existErr } = await supabase
+        .from('useraccount')
+        .select('email')
+        .eq('email', email);
+    if (existErr) throw existErr;
+    if (existing.length) return res.status(400).json({ error: 'Email in use.' });
 
-  const hashed = await bcrypt.hash(password, 10);
-  await supabase.from('useraccount').insert([{ username, email, password: hashed, admin: admin ? 1 : 0 }]);
-  const { data: newUser } = await supabase.from('useraccount').select('*').eq('email', email).single();
+    const hashed = await bcrypt.hash(password, 10);
+    await supabase.from('useraccount').insert([{ username, email, password: hashed, admin: admin ? 1 : 0 }]);
+    const { data: newUser } = await supabase.from('useraccount').select('*').eq('email', email).single();
 
-  const accessToken = generateAccessToken(newUser);
-  const refreshToken = generateRefreshToken(newUser);
+    const accessToken = generateAccessToken(newUser);
+    const refreshToken = generateRefreshToken(newUser);
 
-  // Set HttpOnly cookie
+    // Set HttpOnly cookie
     res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production' ? true : false, // explicitly false in dev
-    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax', // more relaxed for local
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-    path: '/',
+        httpOnly: true,
+        secure: true,           // MUST be true for SameSite=None
+        sameSite: 'None',       // ← allow cross-site
+        path: '/',
     });
 
 
-  const safeUser = { userid: newUser.userid, username: newUser.username, email: newUser.email, admin: newUser.admin };
-  res.status(201).json({ accessToken, user: safeUser });
+    const safeUser = { userid: newUser.userid, username: newUser.username, email: newUser.email, admin: newUser.admin };
+    res.status(201).json({ accessToken, user: safeUser });
 }));
 
 // Login
 app.post('/login', asyncHandler(async (req, res) => {
-  const { username, password } = req.body;
-  const { data: users } = await supabase.from('useraccount').select('*').eq('username', username);
-  const user = users[0];
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(401).json({ message: 'Invalid credentials.' });
-  }
+    const { username, password } = req.body;
+    const { data: users } = await supabase.from('useraccount').select('*').eq('username', username);
+    const user = users[0];
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+        return res.status(401).json({ message: 'Invalid credentials.' });
+    }
 
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
 
     res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production' ? true : false, // explicitly false in dev
-    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax', // more relaxed for local
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-    path: '/',
+        httpOnly: true,
+        secure: true,           // MUST be true for SameSite=None
+        sameSite: 'None',       // ← allow cross-site
+        path: '/',
     });
 
 
-  const safeUser = { userid: user.userid, username: user.username, email: user.email, admin: user.admin };
-  res.json({ accessToken, user: safeUser });
+    const safeUser = { userid: user.userid, username: user.username, email: user.email, admin: user.admin };
+    res.json({ accessToken, user: safeUser });
 }));
 
 
 // Protected example
 app.get('/protected', passport.authenticate('jwt', { session: false }), (req, res) => {
-  res.json({ message: 'Secure data', user: req.user });
+    res.json({ message: 'Secure data', user: req.user });
 });
 
 
 // Get current user profile
 app.get(
-  '/api/me',
-  passport.authenticate('jwt', { session: false }),
-  (req, res) => {
-    const { userid, username, email, admin } = req.user;
-    res.json({ user: { userid, username, email, admin } });
-  }
+    '/api/me',
+    passport.authenticate('jwt', { session: false }),
+    (req, res) => {
+        const { userid, username, email, admin } = req.user;
+        res.json({ user: { userid, username, email, admin } });
+    }
 );
 
 
 app.post('/api/logout', (req, res) => {
-  // 1) clear the old one
-  res.clearCookie('refreshToken', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax',
-    path: '/',            // must match the set path
-  });
+    // 1) clear the old one
+    res.clearCookie('refreshToken', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax',
+        path: '/',            // must match the set path
+    });
 
-  // 2) force‑expire a new one
-  res.cookie('refreshToken', '', {
-    httpOnly: true,
-    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax',
-    path: '/',
-    maxAge: 0,
-  });
+    // 2) force‑expire a new one
+    res.cookie('refreshToken', '', {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'None',
+        path: '/',
+    });
 
-  res.json({ message: 'Logged out' });
+    res.json({ message: 'Logged out' });
 });
 
 
