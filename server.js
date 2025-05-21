@@ -4,6 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const passport = require('passport');
+const cookieParser = require('cookie-parser');
 const { Strategy: JWTStrategy, ExtractJwt } = require('passport-jwt');
 const { createClient } = require('@supabase/supabase-js');
 const fileUpload = require('express-fileupload');
@@ -15,270 +16,199 @@ const app = express();
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 
+// Middleware
 app.use(fileUpload());
-//basic one
-//app.use(cors());
-
-// Example Express middleware for debugging
-app.use((req, res, next) => {
-    console.log("Authorization Header:", req.headers.authorization);
-    next();
-});
-
-
-// //local method
-// const corsOptions = {
-//     origin: 'http://localhost:5173', // replace with your frontend URL
-//     methods: ['GET', 'POST', 'DELETE', 'PUT'],
-//     allowedHeaders: ['Content-Type', 'Authorization'],
-// };
-
-//hosted method
-const corsOptions = {
-    origin: 'https://cdd-frontend.vercel.app',
-    methods: ['GET', 'POST', 'DELETE', 'PUT'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-};
-
-
+app.use(cookieParser());
 
 const allowedOrigins = [
-    'https://cdd-frontend.vercel.app', // Main link
-    'https://cdd-frontend-git-main-nelson-mcfadyens-projects.vercel.app', // Branch link
-    'https://cdd-frontend-fspta32lp-nelson-mcfadyens-projects.vercel.app' // Deployment link
+  'http://localhost:5173',                // dev
+  'https://cdd-frontend.vercel.app'       // prod
 ];
 
-
-// I'm not sure which method this is
-// const corsOptions = {
-//     origin: (origin, callback) => {
-//         if (allowedOrigins.includes(origin) || !origin) {
-//             callback(null, true);
-//         } else {
-//             callback(new Error('Not allowed by CORS'));
-//         }
-//     },
-//     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-//     credentials: true, // If you're using cookies, authorization headers, etc.
-// };
-
-
-
+const corsOptions = {
+  origin: (incomingOrigin, callback) => {
+    // incomingOrigin will be undefined for server-to-server or Postman
+    if (!incomingOrigin || allowedOrigins.includes(incomingOrigin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS origin ${incomingOrigin} not allowed`));
+    }
+  },
+  credentials: true,   // so cookies are accepted
+  methods: ['GET','POST','PUT','DELETE'],
+  allowedHeaders: ['Content-Type','Authorization']
+};
 
 app.use(cors(corsOptions));
-
 app.use(express.json());
-
-
 app.use(passport.initialize());
+
+// Logger for debugging
 app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
-    console.log('Request Body:', req.body);
-    next();
+  console.log(`${req.method} ${req.url}`);
+  console.log('Headers:', req.headers);
+  console.log('Cookies:', req.cookies);
+  next();
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// Middleware for handling async functions
-const asyncHandler = fn => (req, res, next) =>
-    Promise.resolve(fn(req, res, next)).catch(next);
+// Async handler
+const asyncHandler = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// Passport JWT strategy setup
-const jwtOptions = {
-    jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-    secretOrKey: process.env.JWT_SECRET,
-};
+// Passport JWT strategy
+passport.use(new JWTStrategy({
+  jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+  secretOrKey: process.env.JWT_SECRET,
+}, async (payload, done) => {
+  try {
+    const { data: user, error } = await supabase
+      .from('useraccount')
+      .select('*')
+      .eq('userid', payload.userId)
+      .single();
 
-passport.use(new JWTStrategy(jwtOptions, async (jwtPayload, done) => {
-    try {
-        const { data: user, error } = await supabase
-            .from('useraccount')
-            .select('*')
-            .eq('userid', jwtPayload.userId)
-            .single();
-
-        if (error) {
-            return done(error, false);
-        }
-
-        if (user) {
-            return done(null, user);
-        } else {
-            return done(null, false);
-        }
-    } catch (error) {
-        return done(error, false);
-    }
+    if (error) return done(error, false);
+    return user ? done(null, user) : done(null, false);
+  } catch (err) {
+    done(err, false);
+  }
 }));
 
-// Function to generate JWT token
-const generateToken = (user) => {
-    return jwt.sign(
-        { userId: user.userid, username: user.username, admin: user.admin },
-        process.env.JWT_SECRET,
-        { expiresIn: '1h' }
-    );
-};
+// Generate tokens
+const generateAccessToken = user => jwt.sign(
+  { userId: user.userid, username: user.username, admin: user.admin }, 
+  process.env.JWT_SECRET,
+  { expiresIn: '15m' }
+);
 
-
-const generateRefreshToken = (user) => {
-    return jwt.sign(
-        { userId: user.userid },
-        process.env.REFRESH_TOKEN_SECRET,
-        { expiresIn: '7d' }
-    );
-};
+const generateRefreshToken = user => jwt.sign(
+  { userId: user.userid },
+  process.env.REFRESH_TOKEN_SECRET,
+  { expiresIn: '30d' }
+);
 
 // Refresh token endpoint
 app.post('/api/token/refresh', asyncHandler(async (req, res) => {
-    const { refreshToken } = req.body;
+  const token = req.cookies.refreshToken;
+  if (!token) return res.status(401).json({ error: 'No refresh token provided.' });
 
-    if (!refreshToken) {
-        return res.status(401).json({ error: 'Refresh token is required.' });
-    }
+  try {
+    const { userId } = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
+    const { data: user, error } = await supabase
+      .from('useraccount')
+      .select('*')
+      .eq('userid', userId)
+      .single();
+    if (error || !user) throw error || new Error('User not found');
 
-    try {
-        // Verify the refresh token
-        const { userId } = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-
-        // Fetch user from Supabase
-        const { data: user, error } = await supabase
-            .from('useraccount')
-            .select('*')
-            .eq('id', userId)
-            .single();
-
-        if (error) throw error;
-
-        // Generate a new access token
-        const newAccessToken = generateToken(user);
-
-        res.json({ accessToken: newAccessToken });
-    } catch (error) {
-        console.error('Error refreshing token:', error.message);
-        res.status(403).json({ error: 'Invalid or expired refresh token.' });
-    }
+    const newAccessToken = generateAccessToken(user);
+    res.json({ accessToken: newAccessToken });
+  } catch (err) {
+    console.error('Refresh error:', err.message);
+    res.status(403).json({ error: 'Invalid or expired refresh token.' });
+  }
 }));
 
-
-// Route for user registration
+// Registration
 app.post('/register', asyncHandler(async (req, res) => {
-    const { username, email, password, admin } = req.body;
+  const { username, email, password, admin } = req.body;
+  // check existing user
+  const { data: existing, error: existErr } = await supabase
+    .from('useraccount')
+    .select('email')
+    .eq('email', email);
+  if (existErr) throw existErr;
+  if (existing.length) return res.status(400).json({ error: 'Email in use.' });
 
-    try {
-        // Check if a user with the same email already exists
-        const { data: existingUsers, error: existingError } = await supabase
-            .from('useraccount')
-            .select('email')
-            .eq('email', email);
+  const hashed = await bcrypt.hash(password, 10);
+  await supabase.from('useraccount').insert([{ username, email, password: hashed, admin: admin ? 1 : 0 }]);
+  const { data: newUser } = await supabase.from('useraccount').select('*').eq('email', email).single();
 
-        if (existingError) {
-            console.error('Supabase error checking existing user:', existingError.message);
-            return res.status(500).json({ error: 'Error checking existing user' });
-        }
+  const accessToken = generateAccessToken(newUser);
+  const refreshToken = generateRefreshToken(newUser);
 
-        if (existingUsers.length > 0) {
-            return res.status(400).json({ error: 'User with this email already exists' });
-        }
+  // Set HttpOnly cookie
+    res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production' ? true : false, // explicitly false in dev
+    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax', // more relaxed for local
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    path: '/',
+    });
 
-        const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Insert new user into Supabase
-        const { error } = await supabase.from('useraccount').insert([
-            { username, email, password: hashedPassword, admin: admin ? 1 : 0 },
-        ]);
-
-        if (error) {
-            console.error('Supabase insert error:', error.message);
-            return res.status(500).json({ error: 'Error creating the user account' });
-        }
-
-        // Fetch newly registered user data
-        const { data: newUser } = await supabase
-            .from('useraccount')
-            .select('*')
-            .eq('email', email)
-            .single();
-
-        if (!newUser) {
-            return res.status(404).json({ error: 'User not found after registration' });
-        }
-
-        // Generate JWT tokens
-        const token = generateToken(newUser);
-        const refreshToken = generateRefreshToken(newUser);
-
-        console.log('Response:', { token, refreshToken, user: newUser });
-
-        // Create a new object with only the necessary properties
-        const safeUser = {
-            userid: newUser.userid,
-            username: newUser.username,
-            email: newUser.email,
-            admin: newUser.admin
-        };
-
-        // Return tokens and user data
-        res.status(201).json({ token, refreshToken, user: safeUser });
-
-    } catch (error) {
-        console.error('Error during registration:', error.message);
-        res.status(500).json({ error: 'Server error: ' + error.message });
-    }
+  const safeUser = { userid: newUser.userid, username: newUser.username, email: newUser.email, admin: newUser.admin };
+  res.status(201).json({ accessToken, user: safeUser });
 }));
 
-
-// Login endpoint
+// Login
 app.post('/login', asyncHandler(async (req, res) => {
-    const { username, password } = req.body;
+  const { username, password } = req.body;
+  const { data: users } = await supabase.from('useraccount').select('*').eq('username', username);
+  const user = users[0];
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    return res.status(401).json({ message: 'Invalid credentials.' });
+  }
 
-    try {
-        // Fetch user from Supabase
-        const { data: users, error } = await supabase
-            .from('useraccount')
-            .select('*')
-            .eq('username', username);
+  const accessToken = generateAccessToken(user);
+  const refreshToken = generateRefreshToken(user);
 
-        if (error) throw error;
+    res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production' ? true : false, // explicitly false in dev
+    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax', // more relaxed for local
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    path: '/',
+    });
 
-        if (users.length === 0) {
-            console.log('User not found');
-            return res.status(401).json({ message: 'Invalid username or password' });
-        }
 
-        const user = users[0];
-
-        // Create a new object with only the necessary properties
-        const safeUser = {
-            userid: user.userid,
-            username: user.username,
-            email: user.email,
-            admin: user.admin
-        };
-
-        // Compare the password with the hashed password stored in the database
-        const isPasswordValid = await bcrypt.compare(password, user.password);
-        if (!isPasswordValid) {
-            console.log('Invalid password');
-            return res.status(401).json({ message: 'Invalid username or password' });
-        }
-
-        // Generate JWT tokens
-        const token = generateToken(user);
-
-        const refreshToken = generateRefreshToken(user);
-
-        console.log('Login successful');
-        res.status(200).json({ token, refreshToken, user: safeUser });
-
-    } catch (error) {
-        console.error('Error during login:', error.message);
-        res.status(400).json({ message: error.message });
-    }
+  const safeUser = { userid: user.userid, username: user.username, email: user.email, admin: user.admin };
+  res.json({ accessToken, user: safeUser });
 }));
+
+
+// Protected example
+app.get('/protected', passport.authenticate('jwt', { session: false }), (req, res) => {
+  res.json({ message: 'Secure data', user: req.user });
+});
+
+
+// Get current user profile
+app.get(
+  '/api/me',
+  passport.authenticate('jwt', { session: false }),
+  (req, res) => {
+    const { userid, username, email, admin } = req.user;
+    res.json({ user: { userid, username, email, admin } });
+  }
+);
+
+
+app.post('/api/logout', (req, res) => {
+  // 1) clear the old one
+  res.clearCookie('refreshToken', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax',
+    path: '/',            // must match the set path
+  });
+
+  // 2) force‑expire a new one
+  res.cookie('refreshToken', '', {
+    httpOnly: true,
+    sameSite: process.env.NODE_ENV === 'production' ? 'Strict' : 'Lax',
+    path: '/',
+    maxAge: 0,
+  });
+
+  res.json({ message: 'Logged out' });
+});
+
+
+
+
 
 
 
@@ -1245,17 +1175,6 @@ app.get('/api/check-email/:email', passport.authenticate('jwt', { session: false
 }));
 
 
-
-
-
-
-
-
-
-
-
-
-
 // Protected route example (use this structure for a "protected route")
 app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     console.log('Profiles request received');
@@ -1267,3 +1186,6 @@ app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHand
     console.log('Profiles fetched successfully:', data);
     res.json(data);
 }));
+
+
+
