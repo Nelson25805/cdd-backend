@@ -193,14 +193,6 @@ app.post('/api/logout', (req, res) => {
         path: '/',            // must match the set path
     });
 
-    // 2) force‑expire a new one
-    res.cookie('refreshToken', '', {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'None',
-        path: '/',
-    });
-
     res.json({ message: 'Logged out' });
 });
 
