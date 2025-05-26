@@ -44,12 +44,12 @@ app.use(express.json());
 app.use(passport.initialize());
 
 // Logger for debugging
-app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
-    console.log('Headers:', req.headers);
-    console.log('Cookies:', req.cookies);
-    next();
-});
+// app.use((req, res, next) => {
+//     console.log(`${req.method} ${req.url}`);
+//     console.log('Headers:', req.headers);
+//     console.log('Cookies:', req.cookies);
+//     next();
+// });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
@@ -252,48 +252,52 @@ app.post('/add-game-to-database', passport.authenticate('jwt', { session: false 
 
 
 // Route for searching games based on a query
-app.get('/api/search', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const searchQuery = req.query.q;
+app.get(
+    '/api/search',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const searchQuery = req.query.q;
 
-    if (!searchQuery) {
-        return res.status(400).json({ error: 'Search query is required.' });
-    }
+        if (!searchQuery) {
+            return res.status(400).json({ error: 'Search query is required.' });
+        }
 
-    try {
-        const results = await searchGames(searchQuery);
-        res.json({ results });
-    } catch (error) {
-        console.error('Error searching games:', error); // Log the full error
-        res.status(500).json({ error: 'Error searching games.' });
-    }
-}));
+        try {
+            const results = await searchGames(searchQuery);
+            res.json({ results });
+        } catch (error) {
+            console.error('Error searching games:', error);
+            res.status(500).json({ error: 'Error searching games.' });
+        }
+    })
+);
+
+
 
 // Function to search games based on a query using Supabase
 async function searchGames(searchTerm) {
     try {
+        // 🔁 Call the Postgres RPC instead of .ilike()
         const { data, error } = await supabase
-            .from('gameinfo')
-            .select('gameid, name, coverart, console')
-            .ilike('name', `%${searchTerm}%`);
+            .rpc('search_games_unaccent', { search_term: searchTerm });
 
+        // Preserve your existing error check
         if (error) {
-            throw new Error('Error searching games: ' + error.message);
+            throw new Error('Error searching games (unaccent): ' + error.message);
         }
 
-        const results = data.map(game => {
-            let coverArtBase64 = game.coverart;
-            return {
-                GameId: game.gameid,
-                Name: game.name,
-                CoverArt: coverArtBase64,
-                Console: game.console,
-            };
-        });
+        // Map to your API shape
+        const results = data.map(game => ({
+            GameId: game.gameid,
+            Name: game.name,
+            CoverArt: game.coverart,
+            Console: game.console,
+        }));
 
         return results;
     } catch (error) {
         console.error('Error searching games:', error);
-        throw error;
+        throw error;       // Let the route handler catch & respond
     }
 }
 
