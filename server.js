@@ -205,50 +205,51 @@ app.post('/api/logout', (req, res) => {
 
 
 // Route to add a game into the GameInfo database
-app.post('/add-game-to-database', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const { Name, Console } = req.body;
+app.post(
+    '/add-game-to-database',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const { Name, Consoles } = req.body;             // <-- now Consoles is a JSON string
+        const consoleIds = JSON.parse(Consoles);         // e.g. [1, 5, 12]
 
-    try {
-        console.log('Received request to add game:', { Name, Console });
+        if (!req.files?.CoverArt) {
+            return res.status(400).json({ error: 'CoverArt is required.' });
+        }
 
-        const { data: existingGames, error: existingError } = await supabase
+        // 1) Insert into gameinfo (without console column)
+        const coverArtBase64 = req.files.CoverArt.data.toString('base64');
+        const { data: inserted, error: insertError } = await supabase
             .from('gameinfo')
+            .insert([{ name: Name, coverart: coverArtBase64 }])
             .select('gameid')
-            .eq('name', Name)
-            .eq('console', Console);
+            .single();
 
-        if (existingError) {
-            console.error('Supabase error checking existing game:', existingError.message);
-            return res.status(500).json({ error: 'Error checking existing game', details: existingError.message });
+        if (insertError) {
+            console.error('Error inserting gameinfo:', insertError.message);
+            return res.status(500).json({ error: 'Error adding game.', details: insertError.message });
+        }
+        const gameid = inserted.gameid;
+
+        // 2) Insert into gameinfo_console for each platform
+        const links = consoleIds.map((cid) => ({
+            gameid,
+            consoleid: cid,
+        }));
+        const { error: linkError } = await supabase
+            .from('gameinfo_console')
+            .insert(links);
+
+        if (linkError) {
+            console.error('Error linking consoles:', linkError.message);
+            return res
+                .status(500)
+                .json({ error: 'Game added but failed to link consoles.', details: linkError.message });
         }
 
-        if (existingGames.length > 0) {
-            return res.status(420).json({ error: "A game with the same name and console already exists." });
-        }
+        res.status(200).json({ message: 'Game added successfully.' });
+    })
+);
 
-        if (req.files && req.files.CoverArt) {
-            const coverArtFile = req.files.CoverArt;
-            const coverArtBuffer = coverArtFile.data;
-            const coverArtBase64 = coverArtBuffer.toString('base64'); // Convert to base64 string
-
-            const { data: insertData, error: insertError } = await supabase.from('gameinfo').insert([
-                { name: Name, coverart: coverArtBase64, console: Console } // Save base64 string
-            ]);
-
-            if (insertError) {
-                console.error('Supabase insert error:', insertError.message);
-                return res.status(500).json({ error: 'Error adding game to the database', details: insertError.message });
-            } else {
-                res.status(200).json({ message: "Game added successfully" });
-            }
-        } else {
-            res.status(400).json({ error: "CoverArt is required." });
-        }
-    } catch (error) {
-        console.error('Error adding game to the database:', error.message);
-        res.status(500).json({ error: "Server error: " + error.message });
-    }
-}));
 
 
 // Route for searching games based on a query
@@ -277,73 +278,88 @@ app.get(
 // Function to search games based on a query using Supabase
 async function searchGames(searchTerm) {
     try {
-        // 🔁 Call the Postgres RPC instead of .ilike()
-        const { data, error } = await supabase
+        // 1) First, get your basic game rows via your existing RPC
+        const { data: games, error: rpcError } = await supabase
             .rpc('search_games_unaccent', { search_term: searchTerm });
-
-        // Preserve your existing error check
-        if (error) {
-            throw new Error('Error searching games (unaccent): ' + error.message);
+        if (rpcError) {
+            throw new Error('Error searching games (unaccent): ' + rpcError.message);
         }
 
-        // Map to your API shape
-        const results = data.map(game => ({
-            GameId: game.gameid,
-            Name: game.name,
-            CoverArt: game.coverart,
-            Console: game.console,
-        }));
+        // If no games, early‐return []
+        if (!games || games.length === 0) return [];
 
-        return results;
+        // 2) Next, fetch all consoles for those GameIds in one go
+        const gameIds = games.map((g) => g.gameid);
+        const { data: consoleRows, error: consErr } = await supabase
+            .from('gameinfo_console')
+            .select('gameid, console:console ( consoleid, name )')
+            .in('gameid', gameIds);
+        if (consErr) throw consErr;
+
+        // 3) Build a map: gameid → [ {consoleid, name}, … ]
+        const consolesByGame = consoleRows.reduce((map, row) => {
+            if (!map[row.gameid]) map[row.gameid] = [];
+            map[row.gameid].push(row.console);
+            return map;
+        }, {});
+
+        // 4) Finally, merge consoles into your result shape
+        return games.map((g) => ({
+            GameId: g.gameid,
+            Name: g.name,
+            CoverArt: g.coverart,
+            // either the joined array, or empty if none
+            Consoles: consolesByGame[g.gameid] || []
+        }));
     } catch (error) {
-        console.error('Error searching games:', error);
-        throw error;       // Let the route handler catch & respond
+        console.error('Error searching games with consoles:', error);
+        throw error;
     }
 }
 
 
 
 
-
-
-
 // Add wishlist game to wishlist
-app.post('/api/add-to-wishlist/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const { userId, gameId } = req.params;
+app.post(
+    '/api/add-to-wishlist/:userId/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const { userId, gameId } = req.params;
+        const { consoleIds } = req.body;   // e.g. [2,3]
 
-    if (userId && gameId) {
-        try {
-            // Check if the game is already in the user's wishlist
-            const { data: existingWishlist, error: checkError } = await supabase
-                .from('vgwishlist')
-                .select('wishlistid')
-                .eq('userid', userId)
-                .eq('gameid', gameId);
+        // 1) Create wishlist row
+        const { data: wl, error: wlError } = await supabase
+            .from('vgwishlist')
+            .insert([{ userid: userId, gameid: gameId }])
+            .select('wishlistid')
+            .single();
 
-            if (checkError) throw checkError;
-
-            if (existingWishlist.length > 0) {
-                // The game is already in the user's wishlist
-                return res.status(400).json({ error: "The game is already in your wishlist." });
-            }
-
-            // If the game is not in the wishlist, add it
-            const { error: insertError } = await supabase
-                .from('vgwishlist')
-                .insert([{ userid: userId, gameid: gameId }]);
-
-            if (insertError) throw insertError;
-
-            res.status(200).json({ message: 'Game added to wishlist successfully' });
-
-        } catch (error) {
-            console.error('Error adding to wishlist:', error.message);
-            res.status(500).json({ error: 'Error adding game to wishlist.' });
+        if (wlError) {
+            console.error('Error creating wishlist:', wlError.message);
+            return res.status(500).json({ error: 'Could not add to wishlist.' });
         }
-    } else {
-        res.status(400).json({ error: 'Invalid userId or gameId.' });
-    }
-}));
+
+        // 2) Link consoles for this wishlist entry
+        const mappings = consoleIds.map((cid) => ({
+            wishlistid: wl.wishlistid,
+            consoleid: cid,
+        }));
+        const { error: mapError } = await supabase
+            .from('vgwishlist_console')
+            .insert(mappings);
+
+        if (mapError) {
+            console.error('Error linking wishlist consoles:', mapError.message);
+            return res
+                .status(500)
+                .json({ error: 'Wishlist created but failed to link consoles.' });
+        }
+
+        res.status(200).json({ message: 'Added to wishlist.' });
+    })
+);
+
 
 
 
@@ -361,30 +377,44 @@ app.get('/api/mywishlist/:userId', passport.authenticate('jwt', { session: false
 
 // Function to retrieve wishlist items for a user
 async function getWishlistItems(userId) {
+    // Join through the console table to get names
     const { data, error } = await supabase
-        .from('vgwishlist')
+        .from('vgwishlist_console')
         .select(`
-            gameinfo:gameid (
-                gameid,
-                name,
-                coverart,
-                console
-            )
-        `)
+      wishlistid,
+      game:vgwishlist!inner (
+        gameid,
+        name,
+        coverart
+      ),
+      console:console!inner (
+        consoleid,
+        name
+      )
+    `)
         .eq('userid', userId);
 
     if (error) throw error;
 
-    return data.map(wishlistItem => {
-        const game = wishlistItem.gameinfo;
-        return {
-            GameId: game.gameid,
-            Name: game.name,
-            CoverArt: game.coverart,
-            Console: game.console,
+    // Group by wishlistid → aggregate consoles per game
+    const byGame = {};
+    data.forEach((row) => {
+        const wid = row.wishlistid;
+        byGame[wid] = byGame[wid] || {
+            GameId: row.game.gameid,
+            Name: row.game.name,
+            CoverArt: row.game.coverart,
+            Consoles: [],
         };
+        byGame[wid].Consoles.push({
+            consoleid: row.console.consoleid,
+            name: row.console.name,
+        });
     });
+
+    return Object.values(byGame);
 }
+
 
 
 // Remove wishlist game from wishlist
@@ -441,37 +471,81 @@ app.delete('/api/removewishlist/:userId/:gameId', passport.authenticate('jwt', {
 
 
 // Route to retrieve collection items for MyCollection page
-app.get('/api/mycollection/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const userId = req.params.userId;
-    try {
-        const results = await getCollectionItems(userId);
-        res.json({ results });
-    } catch (error) {
-        console.error('Error fetching collection items:', error.message);
-        res.status(500).json({ error: 'Error fetching collection items.' });
-    }
-}));
+app.get(
+    '/api/mycollection/:userId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
 
-// Function to retrieve collection items for a user
-async function getCollectionItems(userId) {
-    const { data, error } = await supabase
-        .from('vgcollection')
-        .select('gameinfo(gameid, name, coverart, console)')
-        .eq('userid', userId);
+        try {
+            // 1️⃣ Pull the user’s saved games (collectionid + gameid)
+            const { data: saved, error: sErr } = await supabase
+                .from('vgcollection')
+                .select('collectionid, gameid')
+                .eq('userid', userId);
+            if (sErr) {
+                console.error('Error fetching vgcollection rows:', sErr);
+                return res.status(500).json({ error: 'Error fetching collection rows.' });
+            }
+            if (saved.length === 0) {
+                return res.json({ results: [] });
+            }
 
-    if (error) {
-        console.error('Error fetching collection items:', error.message);
-        throw error;
-    }
+            // Build two helper arrays:
+            const gameIds = saved.map((r) => r.gameid);
+            const vcIds = saved.map((r) => r.collectionid);
 
-    // No need to convert coverArt to base64 if it's already stored as a string
-    return data.map(item => ({
-        GameId: item.gameinfo.gameid,
-        Name: item.gameinfo.name,
-        CoverArt: item.gameinfo.coverart,  // Directly use the coverArt
-        Console: item.gameinfo.console,
-    }));
-}
+            // 2️⃣ Fetch base info from gameinfo
+            const { data: games, error: gErr } = await supabase
+                .from('gameinfo')
+                .select('gameid, name, coverart')
+                .in('gameid', gameIds);
+            if (gErr) {
+                console.error('Error fetching gameinfo:', gErr);
+                return res.status(500).json({ error: 'Error fetching games.' });
+            }
+
+            // 3️⃣ Fetch only the user‐picked consoles from vgcollection_console
+            const { data: ccRows, error: ccErr } = await supabase
+                .from('vgcollection_console')
+                .select('collectionid, console:console ( consoleid, name )')
+                .in('collectionid', vcIds);
+            if (ccErr) {
+                console.error('Error fetching user consoles:', ccErr);
+                return res.status(500).json({ error: 'Error fetching consoles.' });
+            }
+
+            // 4️⃣ Build a lookup: vgcollectionid → [ {consoleid,name}, … ]
+            const consolesByVg = ccRows.reduce((map, row) => {
+                map[row.collectionid] = map[row.collectionid] || [];
+                map[row.collectionid].push(row.console);
+                return map;
+            }, {});
+
+            // 5️⃣ Assemble the final shape
+            const results = saved.map(({ collectionid, gameid }) => {
+                const g = games.find((x) => x.gameid === gameid) || {};
+                return {
+                    GameId: g.gameid,
+                    Name: g.name,
+                    CoverArt: g.coverart,
+                    Consoles: (consolesByVg[collectionid] || [])
+                        .sort((a, b) => a.name.localeCompare(b.name)),
+                };
+            });
+
+            return res.json({ results });
+        } catch (error) {
+            console.error('Unexpected error in /api/mycollection:', error);
+            return res
+                .status(500)
+                .json({ error: 'Internal server error fetching collection.' });
+        }
+    })
+);
+
+
+
 
 
 // Navigation from Search to check if the game details already exist for the game in collection
@@ -506,122 +580,150 @@ async function checkGameDetails(userId, gameId) {
 }
 
 // Giving GameInfo to the GameDetails page for details addition
-app.get('/api/game-info/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const gameId = req.params.gameId;
-
-    try {
-        // Fetch game details based on gameId
-        const gameDetails = await getGameDetails(gameId);
-
-        if (gameDetails) {
-            // Directly use the stored Base64 string
-            res.json({ gameDetails });
-        } else {
-            res.status(404).json({ error: 'Game not found' });
+app.get(
+    '/api/game-info/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const gameId = Number(req.params.gameId);
+        // 1️⃣ Fetch the core record
+        const { data: core, error: coreErr } = await supabase
+            .from('gameinfo')
+            .select('gameid, name, coverart')
+            .eq('gameid', gameId)
+            .single();
+        if (coreErr || !core) {
+            return res.status(404).json({ error: 'Game not found' });
         }
-    } catch (error) {
-        console.error('Error fetching game details:', error.message);
-        res.status(500).json({ error: 'Error fetching game details.' });
-    }
-}));
 
+        // 2️⃣ Fetch its consoles via the join table
+        const { data: joinRows, error: joinErr } = await supabase
+            .from('gameinfo_console')
+            .select('console:console ( consoleid, name )')
+            .eq('gameid', gameId);
+        if (joinErr) {
+            console.error('Error fetching consoles for game:', joinErr);
+            return res.status(500).json({ error: 'Error fetching consoles' });
+        }
 
-// Function to get game details by gameId
-async function getGameDetails(gameId) {
-    const { data, error } = await supabase
-        .from('gameinfo')
-        .select('gameid, name, coverart, console')
-        .eq('gameid', gameId)
-        .single();
+        // 3️⃣ Extract the console objects
+        const consoles = joinRows.map((r) => r.console);
 
-    if (error) {
-        console.error('Error fetching game details:', error.message);
-        throw error;
-    }
+        // 4️⃣ Respond with the combined shape
+        res.status(200).json({
+            gameDetails: {
+                gameid: core.gameid,
+                name: core.name,
+                coverart: core.coverart,
+                consoles,            // ← your new array of { consoleid, name }
+            },
+        });
+    })
+);
 
-    return data;
-}
 
 // Adding Game Details + Game VGCollection Record
-app.post('/api/add-game-details/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const { userId, gameId } = req.params;
-    const gameDetails = req.body;
+app.post(
+    '/api/add-game-details/:userId/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
+        const gameId = Number(req.params.gameId);
 
-    try {
-        // Add game details
-        const result = await addGameDetails(userId, gameId, gameDetails);
+        // Pull everything directly out of req.body
+        const {
+            ownership,
+            included,
+            checkboxes,
+            notes,
+            completion,
+            review,
+            spoiler,
+            price,
+            rating,
+            consoleIds     // ← now exists at top‐level
+        } = req.body;
 
-        if (result) {
-            res.status(200).json({ message: 'Game details added successfully!' });
-        } else {
-            res.status(500).json({ error: 'Error adding game details.' });
+        try {
+            // Call a helper that takes each field separately
+            await insertGameDetailsAndCollection(userId, gameId, {
+                ownership,
+                included,
+                checkboxes,
+                notes,
+                completion,
+                review,
+                spoiler,
+                price,
+                rating,
+                consoleIds
+            });
+
+            return res.status(200).json({ message: 'Game details added successfully!' });
+        } catch (error) {
+            console.error('Error adding game details:', error);
+            return res.status(500).json({ error: 'Error adding game details.' });
         }
-    } catch (error) {
-        console.error('Error adding game details:', error.message);
-        res.status(500).json({ error: `Error adding game details: ${error.message}` });
+    })
+);
+
+async function insertGameDetailsAndCollection(userId, gameId, data) {
+    const {
+        ownership,
+        included,
+        checkboxes,
+        notes,
+        completion,
+        review,
+        spoiler,
+        price,
+        rating,
+        consoleIds
+    } = data;
+
+    // 1️⃣ Insert into gamedetails
+    const { data: gd, error: gdErr } = await supabase
+        .from('gamedetails')
+        .insert({
+            ownership,
+            included,
+            condition: Array.isArray(checkboxes) ? checkboxes.join(', ') : checkboxes,
+            notes,
+            completion,
+            review,
+            spoiler: spoiler ? 1 : 0,
+            price,
+            rating
+        })
+        .select('gamedetailsid')
+        .single();
+    if (gdErr) throw gdErr;
+
+    // 2️⃣ Insert into vgcollection
+    const { data: vc, error: vcErr } = await supabase
+        .from('vgcollection')
+        .insert({
+            userid: userId,
+            gameid: gameId,
+            gamedetailsid: gd.gamedetailsid
+        })
+        .select('collectionid')
+        .single();
+    if (vcErr) throw vcErr;
+
+    // 3️⃣ Insert chosen consoles
+    if (Array.isArray(consoleIds) && consoleIds.length) {
+        const rows = consoleIds.map((cid) => ({
+            collectionid: vc.collectionid,
+            consoleid: cid,
+        }));
+        const { error: ccErr } = await supabase
+            .from('vgcollection_console')
+            .insert(rows);
+        if (ccErr) throw ccErr;
     }
-}));
 
-// Function to add game details to a game in the collection
-async function addGameDetails(userid, gameid, gameDetails) {
-    const { ownership, included, checkboxes, notes, completion, review, spoiler, price, rating } = gameDetails.gameDetails;
-
-    // Assuming 'checkboxes' is an array of checkbox values, convert to a string
-    const checkboxesString = Array.isArray(checkboxes) ? checkboxes.join(', ') : checkboxes;
-
-    // Convert boolean values to 0 or 1
-    const spoilerValue = spoiler ? 1 : 0;
-
-    try {
-        // Insert game details
-        const { data: gameDetailsData, error: gameDetailsError } = await supabase
-            .from('gamedetails')
-            .insert({
-                ownership: ownership,
-                included: included,
-                condition: checkboxesString,
-                notes: notes,
-                completion: completion,
-                review: review,
-                spoiler: spoilerValue,
-                price: price,
-                rating: rating
-            })
-            .select('gamedetailsid')
-            .single();
-
-        if (gameDetailsError) {
-            console.error('Error adding game details:', gameDetailsError);
-            throw new Error(`Error adding game details: ${gameDetailsError.message}`);
-        }
-
-        const { gamedetailsid } = gameDetailsData;
-
-        // Insert into vgcollection
-        const { data: vgCollectionData, error: vgCollectionError } = await supabase
-            .from('vgcollection')
-            .insert({
-                userid: userid,
-                gameid: gameid,
-                gamedetailsid: gamedetailsid
-            })
-            .select();  // Add select() to return inserted data
-
-        if (vgCollectionError) {
-            console.error('Error adding VGCollection record:', vgCollectionError);
-            throw new Error(`Error adding VGCollection record: ${vgCollectionError.message}`);
-        }
-
-        return vgCollectionData !== null;
-    } catch (error) {
-        console.error('Error in addGameDetails function:', error);
-        throw error;
-    }
+    return true;
 }
-
-
-
-
 
 
 // Remove a game from the collection
@@ -704,66 +806,81 @@ async function removeGameDetails(gameDetailsId) {
 
 
 
+// Replace your old get-game-details with this:
+app.get(
+    '/api/get-game-details/:userId/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
+        const gameId = Number(req.params.gameId);
 
+        try {
+            // Fetch the VGCollection row, join in the user-picked consoles
+            const { data, error } = await supabase
+                .from('vgcollection')
+                .select(`
+          gameinfo (
+            gameid,
+            name,
+            coverart
+          ),
+          vgcollection_console (
+            console (
+              consoleid,
+              name
+            )
+          ),
+          gamedetails (
+            ownership,
+            included,
+            condition,
+            notes,
+            price,
+            completion,
+            rating,
+            review,
+            spoiler
+          )
+        `)
+                .eq('userid', userId)
+                .eq('gameid', gameId)
+                .single();
 
-
-app.get('/api/get-game-details/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const userId = req.params.userId;
-    const gameId = req.params.gameId;
-
-    console.log("Fetching game details for user:", userId, "and game:", gameId);
-
-    try {
-        // Fetch game details based on gameId for a specific user using Supabase
-        const { data, error } = await supabase
-            .from('vgcollection')
-            .select(`
-                gameinfo (
-                    gameid,
-                    name,
-                    coverart,
-                    console
-                ),
-                gamedetails (
-                    ownership,
-                    included,
-                    condition,
-                    notes,
-                    price,
-                    completion,
-                    rating,
-                    review,
-                    spoiler
-                )
-            `)
-            .eq('gameid', gameId)
-            .eq('userid', userId)
-            .single();
-
-        if (error) {
-            console.error('Error fetching game details:', error.message);
-            return res.status(500).json({ error: 'Error fetching game details.' });
-        }
-
-        if (data) {
-            console.log('This is the condition before: ', data.gamedetails.condition);
-            //Put condition string back into an array
-            if (data.gamedetails.condition) {
-                data.gamedetails.condition = data.gamedetails.condition.split(',').map(item => item.trim());
+            if (error) {
+                console.error('Error fetching game details:', error.message);
+                return res.status(500).json({ error: 'Error fetching game details.' });
             }
-            console.log('This is the condition after: ', data.gamedetails.condition);
+            if (!data) {
+                return res.status(404).json({ error: 'Game details not found' });
+            }
 
-            // No need to convert CoverArt to Base64, it's already in Base64
-            console.log("Fetched game details:", data); // Log the fetched data for debugging
-            res.json({ gameDetails: data });
-        } else {
-            res.status(404).json({ error: 'Game details not found' });
+            // Pull out the consoles the user actually picked
+            const consoles = (data.vgcollection_console || []).map((j) => j.console);
+
+            // Turn the condition string back into an array
+            const conditionArr = data.gamedetails.condition
+                ? data.gamedetails.condition.split(',').map((c) => c.trim())
+                : [];
+
+            res.json({
+                gameinfo: {
+                    gameid: data.gameinfo.gameid,
+                    name: data.gameinfo.name,
+                    coverart: data.gameinfo.coverart,
+                    consoles    // <-- user‐picked consoles only
+                },
+                gamedetails: {
+                    ...data.gamedetails,
+                    condition: conditionArr
+                }
+            });
+        } catch (err) {
+            console.error('Unexpected error fetching game details:', err.message);
+            res.status(500).json({ error: 'Error fetching game details.' });
         }
-    } catch (error) {
-        console.error('Error fetching game details:', error.message);
-        res.status(500).json({ error: 'Error fetching game details.' });
-    }
-}));
+    })
+);
+
 
 
 // Add this new route to your server code
