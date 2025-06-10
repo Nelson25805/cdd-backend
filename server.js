@@ -906,35 +906,47 @@ app.put('/api/edit-game-details/:userId/:gameId', passport.authenticate('jwt', {
 
 // Function to update game details
 async function editGameDetails(userId, gameId, gameDetails) {
-    const { ownership, included, checkboxes, notes, gameCompletion: completion, review, spoilerWarning: spoiler, pricePaid: price, rating } = gameDetails;
+    const {
+        ownership,
+        included,
+        checkboxes,
+        notes,
+        gameCompletion: completion,
+        review,
+        spoiler: spoiler,
+        price,
+        rating,
+        consoleIds   // ← array of consoleid from client
+    } = gameDetails;
 
-    // Convert checkboxes to a string to store in the database
-    const checkboxesString = Array.isArray(checkboxes) ? checkboxes.join(',') : checkboxes;
-    const spoilerValue = spoiler ? 1 : 0;
+    const condition = Array.isArray(checkboxes)
+        ? checkboxes.join(',')
+        : checkboxes;
+
+    const spoilerValue = Number(spoiler) === 1 ? 1 : 0;
 
     try {
-        // Retrieve gamedetailsid from vgcollection
-        const { data: vgcollectionData, error: vgcollectionError } = await supabase
+        // 1) get the vgcollection record, including its collectionid & gamedetailsid
+        const { data: vgcol, error: vgcolErr } = await supabase
             .from('vgcollection')
-            .select('gamedetailsid')
+            .select('collectionid, gamedetailsid')
             .eq('userid', userId)
             .eq('gameid', gameId)
             .single();
-
-        if (vgcollectionError || !vgcollectionData) {
-            console.error('Error fetching gamedetailsid:', vgcollectionError?.message || 'No data found');
+        if (vgcolErr || !vgcol) {
+            console.error('fetch vgcollection failed:', vgcolErr);
             return false;
         }
 
-        const gamedetailsid = vgcollectionData.gamedetailsid;
+        const { collectionid, gamedetailsid } = vgcol;
 
-        // Update the gamedetails
-        const { data: updateData, error: updateError } = await supabase
+        // 2) update the gamedetails row
+        const { error: updErr } = await supabase
             .from('gamedetails')
             .update({
                 ownership,
                 included,
-                condition: checkboxesString,
+                condition,
                 notes,
                 completion,
                 review,
@@ -944,24 +956,43 @@ async function editGameDetails(userId, gameId, gameDetails) {
             })
             .eq('gamedetailsid', gamedetailsid);
 
-        if (updateError) {
-            console.error('Error updating game details:', updateError.message);
+        if (updErr) {
+            console.error('update gamedetails failed:', updErr);
             return false;
         }
 
-        console.log('Update result:', updateData);
-
-        // Check if the update operation reported any affected rows or returned data
-        if (updateData !== null) {
-            return true;
-        } else {
-            return true;  // Treat as successful if no error was reported
+        // 3) wipe out the old console‐links for this collection
+        const { error: delErr } = await supabase
+            .from('vgcollection_console')
+            .delete()
+            .eq('collectionid', collectionid);
+        if (delErr) {
+            console.error('delete old consoles failed:', delErr);
+            return false;
         }
-    } catch (error) {
-        console.error('Unexpected error updating game details:', error.message);
+
+        // 4) insert the new consoleIds
+        if (Array.isArray(consoleIds) && consoleIds.length) {
+            const rows = consoleIds.map(consoleid => ({
+                collectionid,
+                consoleid
+            }));
+            const { error: insErr } = await supabase
+                .from('vgcollection_console')
+                .insert(rows);
+            if (insErr) {
+                console.error('insert new consoles failed:', insErr);
+                return false;
+            }
+        }
+        return true;
+    } catch (err) {
+        console.error('Unexpected error in editGameDetails:', err);
         return false;
     }
 }
+
+
 
 
 
