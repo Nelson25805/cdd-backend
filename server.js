@@ -317,103 +317,145 @@ async function searchGames(searchTerm) {
     }
 }
 
-
-
-
-// Add wishlist game to wishlist
-app.post(
-    '/api/add-to-wishlist/:userId/:gameId',
+//Check if a game is already in the wishlist
+app.get(
+    '/api/check-wishlist/:userId/:gameId',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const { userId, gameId } = req.params;
-        const { consoleIds } = req.body;   // e.g. [2,3]
+        const userId = Number(req.params.userId);
+        const gameId = Number(req.params.gameId);
 
-        // 1) Create wishlist row
-        const { data: wl, error: wlError } = await supabase
+        // look for an entry in vgwishlist
+        const { data, error } = await supabase
             .from('vgwishlist')
-            .insert([{ userid: userId, gameid: gameId }])
-            .select('wishlistid')
-            .single();
+            .select('userid, gameid')
+            .eq('userid', userId)
+            .eq('gameid', gameId);
 
-        if (wlError) {
-            console.error('Error creating wishlist:', wlError.message);
-            return res.status(500).json({ error: 'Could not add to wishlist.' });
+        if (error) {
+            console.error('Error checking wishlist:', error.message);
+            return res.status(500).json({ error: 'Error checking wishlist.' });
         }
 
-        // 2) Link consoles for this wishlist entry
-        const mappings = consoleIds.map((cid) => ({
-            wishlistid: wl.wishlistid,
-            consoleid: cid,
-        }));
-        const { error: mapError } = await supabase
-            .from('vgwishlist_console')
-            .insert(mappings);
-
-        if (mapError) {
-            console.error('Error linking wishlist consoles:', mapError.message);
-            return res
-                .status(500)
-                .json({ error: 'Wishlist created but failed to link consoles.' });
-        }
-
-        res.status(200).json({ message: 'Added to wishlist.' });
+        return res.json({ hasWishlist: Array.isArray(data) && data.length > 0 });
     })
 );
 
 
 
+// Add wishlist game to wishlist
+app.post(
+    '/api/add-game-wishlist/:userId/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
+        const gameId = Number(req.params.gameId);
+        const { consoleIds } = req.body;      // array of ints
+
+        if (!Array.isArray(consoleIds) || consoleIds.length === 0) {
+            return res.status(400).json({ error: 'Must select at least one platform' });
+        }
+
+        // 1) insert into vgwishlist
+        const { data: wl, error: wErr } = await supabase
+            .from('vgwishlist')
+            .insert({ userid: userId, gameid: gameId })
+            .select('wishlistid')
+            .single();
+        if (wErr) {
+            console.error('Error creating wishlist record:', wErr);
+            return res.status(500).json({ error: 'Error creating wishlist' });
+        }
+
+        // 2) insert join rows
+        const rows = consoleIds.map(consoleid => ({
+            wishlistid: wl.wishlistid,
+            consoleid
+        }));
+        const { error: wcErr } = await supabase
+            .from('vgwishlist_console')
+            .insert(rows);
+        if (wcErr) {
+            console.error('Error inserting wishlist consoles:', wcErr);
+            return res.status(500).json({ error: 'Error saving platforms' });
+        }
+
+        res.json({ message: 'Added to wishlist!' });
+    })
+);
+
+
 
 // Route to retrieve wishlist items for MyWishlist page
-app.get('/api/mywishlist/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
-    const userId = req.params.userId;
+app.get(
+  '/api/mywishlist/:userId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const userId = Number(req.params.userId);
+
     try {
-        const results = await getWishlistItems(userId);
-        res.json({ results });
-    } catch (error) {
-        console.error('Error fetching wishlist items:', error.message);
-        res.status(500).json({ error: 'Error fetching wishlist items.' });
-    }
-}));
-
-// Function to retrieve wishlist items for a user
-async function getWishlistItems(userId) {
-    // Join through the console table to get names
-    const { data, error } = await supabase
-        .from('vgwishlist_console')
-        .select(`
-      wishlistid,
-      game:vgwishlist!inner (
-        gameid,
-        name,
-        coverart
-      ),
-      console:console!inner (
-        consoleid,
-        name
-      )
-    `)
+      // 1️⃣ Get the user’s saved wishlist rows (wishlistid + gameid)
+      const { data: saved, error: sErr } = await supabase
+        .from('vgwishlist')
+        .select('wishlistid, gameid')
         .eq('userid', userId);
+      if (sErr) {
+        console.error('Error fetching vgwishlist rows:', sErr.message);
+        return res.status(500).json({ error: 'Error fetching wishlist.' });
+      }
+      if (!saved.length) {
+        return res.json({ results: [] });
+      }
 
-    if (error) throw error;
+      // 2️⃣ Pull basic game info
+      const gameIds = saved.map((r) => r.gameid);
+      const { data: games, error: gErr } = await supabase
+        .from('gameinfo')
+        .select('gameid, name, coverart')
+        .in('gameid', gameIds);
+      if (gErr) {
+        console.error('Error fetching gameinfo:', gErr.message);
+        return res.status(500).json({ error: 'Error fetching games.' });
+      }
 
-    // Group by wishlistid → aggregate consoles per game
-    const byGame = {};
-    data.forEach((row) => {
-        const wid = row.wishlistid;
-        byGame[wid] = byGame[wid] || {
-            GameId: row.game.gameid,
-            Name: row.game.name,
-            CoverArt: row.game.coverart,
-            Consoles: [],
+      // 3️⃣ Pull only the consoles the user picked for each wishlist row
+      const wlIds = saved.map((r) => r.wishlistid);
+      const { data: consoleRows, error: cErr } = await supabase
+        .from('vgwishlist_console')
+        .select('wishlistid, console:console ( consoleid, name )')
+        .in('wishlistid', wlIds);
+      if (cErr) {
+        console.error('Error fetching wishlist consoles:', cErr.message);
+        return res.status(500).json({ error: 'Error fetching consoles.' });
+      }
+
+      // 4️⃣ Build a lookup: wishlistid → [ {consoleid,name}, … ]
+      const consolesByWl = consoleRows.reduce((map, row) => {
+        map[row.wishlistid] = map[row.wishlistid] || [];
+        map[row.wishlistid].push(row.console);
+        return map;
+      }, {});
+
+      // 5️⃣ Assemble final results
+      const results = saved.map(({ wishlistid, gameid }) => {
+        const g = games.find((x) => x.gameid === gameid) || {};
+        return {
+          GameId: g.gameid,
+          Name: g.name,
+          CoverArt: g.coverart,
+          Consoles: (consolesByWl[wishlistid] || []).sort((a, b) =>
+            a.name.localeCompare(b.name)
+          ),
         };
-        byGame[wid].Consoles.push({
-            consoleid: row.console.consoleid,
-            name: row.console.name,
-        });
-    });
+      });
 
-    return Object.values(byGame);
-}
+      res.json({ results });
+    } catch (err) {
+      console.error('Unexpected error in /api/mywishlist:', err.message);
+      res.status(500).json({ error: 'Internal server error fetching wishlist.' });
+    }
+  })
+);
 
 
 
