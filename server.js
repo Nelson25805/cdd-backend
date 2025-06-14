@@ -15,7 +15,6 @@ const app = express();
 // Supabase client setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-
 // Middleware
 app.use(fileUpload());
 app.use(cookieParser());
@@ -384,8 +383,6 @@ app.post(
     })
 );
 
-
-
 // Route to retrieve wishlist items for MyWishlist page
 app.get(
   '/api/mywishlist/:userId',
@@ -456,8 +453,6 @@ app.get(
     }
   })
 );
-
-
 
 // Remove wishlist game from wishlist
 app.delete('/api/removewishlist/:userId/:gameId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
@@ -585,9 +580,6 @@ app.get(
         }
     })
 );
-
-
-
 
 
 // Navigation from Search to check if the game details already exist for the game in collection
@@ -847,7 +839,6 @@ async function removeGameDetails(gameDetailsId) {
 }
 
 
-
 // Replace your old get-game-details with this:
 app.get(
     '/api/get-game-details/:userId/:gameId',
@@ -922,7 +913,6 @@ app.get(
         }
     })
 );
-
 
 
 // Add this new route to your server code
@@ -1033,10 +1023,6 @@ async function editGameDetails(userId, gameId, gameDetails) {
         return false;
     }
 }
-
-
-
-
 
 app.get('/api/reports/:reportType', passport.authenticate('jwt', { session: false }), async (req, res) => {
     try {
@@ -1160,7 +1146,6 @@ app.get('/api/reports/:reportType', passport.authenticate('jwt', { session: fals
             }
 
 
-
             // Most Wanted Game
             if (reportType === 'MostWantedGame') {
                 // Fetch all wishlist entries
@@ -1224,8 +1209,6 @@ app.get('/api/reports/:reportType', passport.authenticate('jwt', { session: fals
 });
 
 
-
-
 app.put('/api/update-username/:userId', passport.authenticate('jwt', { session: false }), asyncHandler(async (req, res) => {
     const { userId } = req.params;
     const { newUsername } = req.body;
@@ -1256,10 +1239,6 @@ app.put('/api/update-username/:userId', passport.authenticate('jwt', { session: 
         res.status(500).json({ error: 'Error updating username' });
     }
 }));
-
-
-
-
 
 
 // Check if username exists
@@ -1370,6 +1349,3 @@ app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHand
     console.log('Profiles fetched successfully:', data);
     res.json(data);
 }));
-
-
-
