@@ -385,73 +385,73 @@ app.post(
 
 // Route to retrieve wishlist items for MyWishlist page
 app.get(
-  '/api/mywishlist/:userId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const userId = Number(req.params.userId);
+    '/api/mywishlist/:userId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
 
-    try {
-      // 1️⃣ Get the user’s saved wishlist rows (wishlistid + gameid)
-      const { data: saved, error: sErr } = await supabase
-        .from('vgwishlist')
-        .select('wishlistid, gameid')
-        .eq('userid', userId);
-      if (sErr) {
-        console.error('Error fetching vgwishlist rows:', sErr.message);
-        return res.status(500).json({ error: 'Error fetching wishlist.' });
-      }
-      if (!saved.length) {
-        return res.json({ results: [] });
-      }
+        try {
+            // 1️⃣ Get the user’s saved wishlist rows (wishlistid + gameid)
+            const { data: saved, error: sErr } = await supabase
+                .from('vgwishlist')
+                .select('wishlistid, gameid')
+                .eq('userid', userId);
+            if (sErr) {
+                console.error('Error fetching vgwishlist rows:', sErr.message);
+                return res.status(500).json({ error: 'Error fetching wishlist.' });
+            }
+            if (!saved.length) {
+                return res.json({ results: [] });
+            }
 
-      // 2️⃣ Pull basic game info
-      const gameIds = saved.map((r) => r.gameid);
-      const { data: games, error: gErr } = await supabase
-        .from('gameinfo')
-        .select('gameid, name, coverart')
-        .in('gameid', gameIds);
-      if (gErr) {
-        console.error('Error fetching gameinfo:', gErr.message);
-        return res.status(500).json({ error: 'Error fetching games.' });
-      }
+            // 2️⃣ Pull basic game info
+            const gameIds = saved.map((r) => r.gameid);
+            const { data: games, error: gErr } = await supabase
+                .from('gameinfo')
+                .select('gameid, name, coverart')
+                .in('gameid', gameIds);
+            if (gErr) {
+                console.error('Error fetching gameinfo:', gErr.message);
+                return res.status(500).json({ error: 'Error fetching games.' });
+            }
 
-      // 3️⃣ Pull only the consoles the user picked for each wishlist row
-      const wlIds = saved.map((r) => r.wishlistid);
-      const { data: consoleRows, error: cErr } = await supabase
-        .from('vgwishlist_console')
-        .select('wishlistid, console:console ( consoleid, name )')
-        .in('wishlistid', wlIds);
-      if (cErr) {
-        console.error('Error fetching wishlist consoles:', cErr.message);
-        return res.status(500).json({ error: 'Error fetching consoles.' });
-      }
+            // 3️⃣ Pull only the consoles the user picked for each wishlist row
+            const wlIds = saved.map((r) => r.wishlistid);
+            const { data: consoleRows, error: cErr } = await supabase
+                .from('vgwishlist_console')
+                .select('wishlistid, console:console ( consoleid, name )')
+                .in('wishlistid', wlIds);
+            if (cErr) {
+                console.error('Error fetching wishlist consoles:', cErr.message);
+                return res.status(500).json({ error: 'Error fetching consoles.' });
+            }
 
-      // 4️⃣ Build a lookup: wishlistid → [ {consoleid,name}, … ]
-      const consolesByWl = consoleRows.reduce((map, row) => {
-        map[row.wishlistid] = map[row.wishlistid] || [];
-        map[row.wishlistid].push(row.console);
-        return map;
-      }, {});
+            // 4️⃣ Build a lookup: wishlistid → [ {consoleid,name}, … ]
+            const consolesByWl = consoleRows.reduce((map, row) => {
+                map[row.wishlistid] = map[row.wishlistid] || [];
+                map[row.wishlistid].push(row.console);
+                return map;
+            }, {});
 
-      // 5️⃣ Assemble final results
-      const results = saved.map(({ wishlistid, gameid }) => {
-        const g = games.find((x) => x.gameid === gameid) || {};
-        return {
-          GameId: g.gameid,
-          Name: g.name,
-          CoverArt: g.coverart,
-          Consoles: (consolesByWl[wishlistid] || []).sort((a, b) =>
-            a.name.localeCompare(b.name)
-          ),
-        };
-      });
+            // 5️⃣ Assemble final results
+            const results = saved.map(({ wishlistid, gameid }) => {
+                const g = games.find((x) => x.gameid === gameid) || {};
+                return {
+                    GameId: g.gameid,
+                    Name: g.name,
+                    CoverArt: g.coverart,
+                    Consoles: (consolesByWl[wishlistid] || []).sort((a, b) =>
+                        a.name.localeCompare(b.name)
+                    ),
+                };
+            });
 
-      res.json({ results });
-    } catch (err) {
-      console.error('Unexpected error in /api/mywishlist:', err.message);
-      res.status(500).json({ error: 'Internal server error fetching wishlist.' });
-    }
-  })
+            res.json({ results });
+        } catch (err) {
+            console.error('Unexpected error in /api/mywishlist:', err.message);
+            res.status(500).json({ error: 'Internal server error fetching wishlist.' });
+        }
+    })
 );
 
 // Remove wishlist game from wishlist
@@ -505,6 +505,96 @@ app.delete('/api/removewishlist/:userId/:gameId', passport.authenticate('jwt', {
         res.status(500).json({ error: 'Error removing game from wishlist' });
     }
 }));
+
+// GET the consoles for a wishlist item
+app.get(
+  '/api/get-wishlist-details/:userId/:gameId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const userId = Number(req.params.userId);
+    const gameId = Number(req.params.gameId);
+
+    // 1) First grab the wishlistid
+    const { data: wl, error: wlErr } = await supabase
+      .from('vgwishlist')
+      .select('wishlistid')
+      .eq('userid', userId)
+      .eq('gameid', gameId)
+      .single();
+
+    if (wlErr || !wl) {
+      console.error('Error fetching wishlist parent:', wlErr);
+      return res.status(404).json({ error: 'Wishlist item not found.' });
+    }
+
+    // 2) Now fetch child consoles for that wishlistid
+    const { data: rows, error } = await supabase
+      .from('vgwishlist_console')
+      .select('console ( consoleid, name )')
+      .eq('wishlistid', wl.wishlistid);
+
+    if (error) {
+      console.error('Error fetching wishlist consoles:', error);
+      return res.status(500).json({ error: 'Error fetching wishlist consoles.' });
+    }
+
+    // unwrap and return
+    const consoles = (rows || []).map(r => r.console);
+    res.json({ consoles });
+  })
+);
+
+// PUT update consoles on a wishlist entry
+app.put(
+  '/api/edit-wishlist/:userId/:gameId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const userId = Number(req.params.userId);
+    const gameId = Number(req.params.gameId);
+    const { consoleIds } = req.body;
+
+    // 1) Fetch the wishlistid first
+    const { data: wl, error: wlErr } = await supabase
+      .from('vgwishlist')
+      .select('wishlistid')
+      .eq('userid', userId)
+      .eq('gameid', gameId)
+      .single();
+    if (wlErr || !wl) {
+      console.error('Error fetching wishlist parent:', wlErr);
+      return res.status(404).json({ error: 'Wishlist item not found.' });
+    }
+    const wishlistid = wl.wishlistid;
+
+    // 2) Delete old child links by wishlistid
+    const { error: delErr } = await supabase
+      .from('vgwishlist_console')
+      .delete()
+      .eq('wishlistid', wishlistid);
+    if (delErr) {
+      console.error('Error deleting old consoles:', delErr);
+      throw delErr;
+    }
+
+    // 3) Insert new ones
+    if (Array.isArray(consoleIds) && consoleIds.length) {
+      const rows = consoleIds.map(cid => ({
+        wishlistid,
+        consoleid: cid
+      }));
+      const { error: insErr } = await supabase
+        .from('vgwishlist_console')
+        .insert(rows);
+      if (insErr) {
+        console.error('Error inserting new consoles:', insErr);
+        throw insErr;
+      }
+    }
+
+    res.status(200).json({ message: 'Wishlist updated successfully' });
+  })
+);
+
 
 
 // Route to retrieve collection items for MyCollection page
