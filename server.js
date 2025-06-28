@@ -1439,3 +1439,320 @@ app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHand
     console.log('Profiles fetched successfully:', data);
     res.json(data);
 }));
+
+
+
+
+
+//
+// ───────────── USER SEARCH & FRIEND REQUESTS ─────────────
+//
+
+// 1) Search users by username (partial match), exclude yourself,
+//    return flags for pending request and existing friendship.
+app.get(
+  '/api/users/search',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me = req.user.userid;
+    const q  = req.query.q || '';
+
+    // find matching users (excluding yourself)
+    const { data: users } = await supabase
+      .from('useraccount')
+      .select('userid, username')
+      .ilike('username', `%${q}%`)
+      .neq('userid', me);
+
+    // for each user, check friend_requests & friendships
+    const results = await Promise.all(users.map(async u => {
+      // pending request?
+      const { count: reqCount } = await supabase
+        .from('friend_requests')
+        .select('*', { count: 'exact' })
+        .match({ requester_id: me, target_id: u.userid });
+
+      // already friends?
+      const { count: friCount } = await supabase
+        .from('friendships')
+        .select('*', { count: 'exact' })
+        .or(
+          `and(user_a.eq.${me},user_b.eq.${u.userid}),` +
+          `and(user_a.eq.${u.userid},user_b.eq.${me})`
+        );
+
+      return {
+        id:          u.userid,
+        username:    u.username,
+        requestSent: reqCount > 0,
+        isFriend:    friCount > 0,
+      };
+    }));
+
+    res.json(results);
+  })
+);
+
+// 2) Send a friend request
+app.post(
+  '/api/friends/request/:targetId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me     = req.user.userid;
+    const target = Number(req.params.targetId);
+
+    await supabase
+      .from('friend_requests')
+      .insert({ requester_id: me, target_id: target });
+
+    res.json({ success: true });
+  })
+);
+
+// 3) Cancel a pending request
+app.delete(
+  '/api/friends/request/:targetId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me     = req.user.userid;
+    const target = Number(req.params.targetId);
+
+    await supabase
+      .from('friend_requests')
+      .delete()
+      .match({ requester_id: me, target_id: target });
+
+    res.json({ success: true });
+  })
+);
+
+// 4) Accept a friend request (and create friendship + chat thread)
+app.post(
+  '/api/friends/accept/:requesterId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me        = req.user.userid;
+    const requester = Number(req.params.requesterId);
+
+    // 1. remove the pending request
+    await supabase
+      .from('friend_requests')
+      .delete()
+      .match({ requester_id: requester, target_id: me });
+
+    // 2. insert into friendships
+    const [a,b] = [Math.min(me, requester), Math.max(me, requester)];
+    await supabase
+      .from('friendships')
+      .insert({ user_a: a, user_b: b });
+
+    // 3. upsert chat_threads so we get a threadId
+    await supabase
+      .from('chat_threads')
+      .upsert({ user_a: a, user_b: b }, { onConflict: ['user_a','user_b'] });
+
+    res.json({ success: true });
+  })
+);
+
+// 5) Unfriend (delete from friendships)
+app.delete(
+  '/api/friends/:otherId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me    = req.user.userid;
+    const other = Number(req.params.otherId);
+
+    await supabase
+      .from('friendships')
+      .delete()
+      .or(
+        `and(user_a.eq.${me},user_b.eq.${other}),` +
+        `and(user_a.eq.${other},user_b.eq.${me})`
+      );
+
+    res.json({ success: true });
+  })
+);
+
+//
+// ───────────── USER PROFILE & OTHER’S COLLECTION/WISHLIST ─────────────
+//
+
+// 6) Public user profile, plus isFriend flag & chatThreadId
+app.get(
+  '/api/users/:userId/profile',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me    = req.user.userid;
+    const other = Number(req.params.userId);
+
+    // 1️⃣ Fetch exactly one user row
+    const { data: u, error: userErr } = await supabase
+      .from('useraccount')
+      .select('userid, username, avatar_url, bio')
+      .eq('userid', other)
+      .single();
+
+    if (userErr) {
+      console.error('Error fetching user profile:', userErr);
+      return res.status(500).json({ error: 'Database error reading user.' });
+    }
+    if (!u) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    // 2️⃣ Check friendship count
+    const { count: friCount, error: friErr } = await supabase
+      .from('friendships')
+      .select('*', { count: 'exact' })
+      .or(
+        `and(user_a.eq.${me},user_b.eq.${other}),` +
+        `and(user_a.eq.${other},user_b.eq.${me})`
+      );
+
+    if (friErr) {
+      console.error('Error checking friendship:', friErr);
+      return res.status(500).json({ error: 'Database error checking friendship.' });
+    }
+
+    // 3️⃣ Look up (or create) a chat thread
+    let threadId = null;
+    const { data: thread, error: threadErr } = await supabase
+      .from('chat_threads')
+      .select('id')
+      .or(
+        `and(user_a.eq.${me},user_b.eq.${other}),` +
+        `and(user_a.eq.${other},user_b.eq.${me})`
+      )
+      .single();
+
+    if (threadErr && threadErr.code !== 'PGRST116') { // 116 = no rows
+      console.error('Error fetching chat thread:', threadErr);
+      return res.status(500).json({ error: 'Database error fetching chat thread.' });
+    }
+    threadId = thread?.id ?? null;
+
+    // 4️⃣ Return the combined profile
+    res.json({
+      id:           u.userid,
+      username:     u.username,
+      avatar:       u.avatar_url,
+      bio:          u.bio,
+      isFriend:     (friCount || 0) > 0,
+      chatThreadId: threadId,
+    });
+  })
+);
+
+
+// 7) Fetch another user’s collection
+app.get(
+  '/api/users/:userId/collection',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const other = Number(req.params.userId);
+
+    // reuse your existing logic: fetch from vgcollection, join gameinfo and consoles
+    // example simplest form:
+    const { data } = await supabase
+      .from('vgcollection')
+      .select(`
+        gameid,
+        gameinfo(name, coverart),
+        vgcollection_console(console (consoleid, name))
+      `)
+      .eq('userid', other);
+
+    // map to the shape your frontend expects
+    const results = data.map(row => ({
+      GameId:  row.gameid,
+      Name:    row.gameinfo.name,
+      CoverArt:row.gameinfo.coverart,
+      Consoles: row.vgcollection_console.map(c => c.console),
+    }));
+
+    res.json(results);
+  })
+);
+
+// 8) Fetch another user’s wishlist
+app.get(
+  '/api/users/:userId/wishlist',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const other = Number(req.params.userId);
+
+    const { data } = await supabase
+      .from('vgwishlist')
+      .select(`
+        gameid,
+        gameinfo(name, coverart),
+        vgwishlist_console(console (consoleid, name))
+      `)
+      .eq('userid', other);
+
+    const results = data.map(row => ({
+      GameId:  row.gameid,
+      Name:    row.gameinfo.name,
+      CoverArt:row.gameinfo.coverart,
+      Consoles: row.vgwishlist_console.map(c => c.console),
+    }));
+
+    res.json(results);
+  })
+);
+
+//
+// ───────────── MESSAGING ─────────────
+//
+
+// 9) Get messages in a thread
+app.get(
+  '/api/messages/:threadId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const threadId = Number(req.params.threadId);
+    const { data } = await supabase
+      .from('chat_messages')
+      .select('id, sender_id, text, sent_at, sender:sender_id(username)')
+      .eq('thread_id', threadId)
+      .order('sent_at', { ascending: true });
+
+    // flatten sender username
+    const messages = data.map(m => ({
+      id:         m.id,
+      senderId:   m.sender_id,
+      senderName: m.sender.username,
+      text:       m.text,
+      timestamp:  m.sent_at,
+    }));
+
+    res.json(messages);
+  })
+);
+
+// 10) Send a message
+app.post(
+  '/api/messages/:threadId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const threadId = Number(req.params.threadId);
+    const senderId = req.user.userid;
+    const { text } = req.body;
+
+    const { data } = await supabase
+      .from('chat_messages')
+      .insert([{ thread_id: threadId, sender_id: senderId, text }])
+      .select('id, sender_id, text, sent_at');
+
+    const sent = data[0];
+    res.json({
+      id:         sent.id,
+      senderId:   sent.sender_id,
+      senderName: req.user.username,
+      text:       sent.text,
+      timestamp:  sent.sent_at,
+    });
+  })
+);
