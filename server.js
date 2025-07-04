@@ -1575,6 +1575,48 @@ app.delete(
   })
 );
 
+// Server: GET /api/friends/requests/incoming
+app.get(
+  '/api/friends/requests/incoming',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me = req.user.userid;
+
+    // 1️⃣ Fetch the raw pending rows (only the requester_id)
+    const { data: rows, error: rowErr } = await supabase
+      .from('friend_requests')
+      .select('requester_id')
+      .eq('target_id', me);
+
+    if (rowErr) {
+      console.error('Error fetching friend_requests:', rowErr);
+      return res.status(500).json({ error: 'Database error.' });
+    }
+
+    // 2️⃣ For each, look up the user’s public info
+    const requests = await Promise.all(rows.map(async ({ requester_id }) => {
+      const { data: user, error: userErr } = await supabase
+        .from('useraccount')
+        .select('userid, username, avatar_url')
+        .eq('userid', requester_id)
+        .single();
+
+      if (userErr) throw userErr;
+
+      return {
+        requesterId: user.userid,
+        username:    user.username,
+        avatar:      user.avatar_url
+      };
+    }));
+
+    res.json(requests);
+  })
+);
+
+
+
+
 //
 // ───────────── USER PROFILE & OTHER’S COLLECTION/WISHLIST ─────────────
 //
