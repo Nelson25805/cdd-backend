@@ -1541,19 +1541,33 @@ app.post(
       .match({ requester_id: requester, target_id: me });
 
     // 2. insert into friendships
-    const [a,b] = [Math.min(me, requester), Math.max(me, requester)];
+    const [a, b] = [Math.min(me, requester), Math.max(me, requester)];
     await supabase
       .from('friendships')
       .insert({ user_a: a, user_b: b });
 
-    // 3. upsert chat_threads so we get a threadId
+    // 3. upsert chat_threads so we get a thread row
     await supabase
       .from('chat_threads')
       .upsert({ user_a: a, user_b: b }, { onConflict: ['user_a','user_b'] });
 
-    res.json({ success: true });
+    // 4. select the threadId
+    const { data: [threadRow], error: threadErr } = await supabase
+      .from('chat_threads')
+      .select('id')
+      .match({ user_a: a, user_b: b })
+      .limit(1);
+
+    if (threadErr || !threadRow) {
+      console.error('Error fetching thread after accept:', threadErr);
+      return res.status(500).json({ error: 'Could not determine chat thread.' });
+    }
+
+    // 5. return it to the client
+    res.json({ success: true, threadId: threadRow.id });
   })
 );
+
 
 // 5) Unfriend (delete from friendships)
 app.delete(
@@ -1581,38 +1595,91 @@ app.get(
   passport.authenticate('jwt', { session: false }),
   asyncHandler(async (req, res) => {
     const me = req.user.userid;
-
-    // 1️⃣ Fetch the raw pending rows (only the requester_id)
-    const { data: rows, error: rowErr } = await supabase
+    const { data: rows, error } = await supabase
       .from('friend_requests')
       .select('requester_id')
       .eq('target_id', me);
 
-    if (rowErr) {
-      console.error('Error fetching friend_requests:', rowErr);
+    if (error) {
+      console.error('Error fetching friend_requests:', error);
       return res.status(500).json({ error: 'Database error.' });
     }
 
-    // 2️⃣ For each, look up the user’s public info
-    const requests = await Promise.all(rows.map(async ({ requester_id }) => {
-      const { data: user, error: userErr } = await supabase
+    // ensure rows is an array
+    const pending = Array.isArray(rows) ? rows : [];
+
+    const requests = await Promise.all(pending.map(async ({ requester_id }) => {
+      const { data: u, error: userErr } = await supabase
         .from('useraccount')
         .select('userid, username, avatar_url')
         .eq('userid', requester_id)
         .single();
-
       if (userErr) throw userErr;
-
       return {
-        requesterId: user.userid,
-        username:    user.username,
-        avatar:      user.avatar_url
+        requesterId: u.userid,
+        username:    u.username,
+        avatar:      u.avatar_url
       };
     }));
 
     res.json(requests);
   })
 );
+
+
+
+
+// 11) List all your current friends + their chat thread IDs
+app.get(
+  '/api/friends',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me = req.user.userid;
+
+    // 1️⃣ Fetch all friendships involving me
+    const { data: rows, error } = await supabase
+      .from('friendships')
+      .select('user_a, user_b')
+      .or(`user_a.eq.${me},user_b.eq.${me}`);
+
+    if (error) {
+      console.error('Error fetching friendships:', error);
+      return res.status(500).json({ error: 'Database error.' });
+    }
+
+    // 2️⃣ For each row, determine the other user id and lookup thread
+    const friends = await Promise.all(rows.map(async ({ user_a, user_b }) => {
+      const other = user_a === me ? user_b : user_a;
+
+      // fetch their basic profile (username, avatar)
+      const { data: u } = await supabase
+        .from('useraccount')
+        .select('userid, username, avatar_url')
+        .eq('userid', other)
+        .single();
+
+      // fetch the chat thread
+      const { data: threadRow } = await supabase
+        .from('chat_threads')
+        .select('id')
+        .match({
+          user_a: Math.min(me, other),
+          user_b: Math.max(me, other)
+        })
+        .single();
+
+      return {
+        id:         u.userid,
+        username:   u.username,
+        avatar:     u.avatar_url,
+        threadId:   threadRow?.id
+      };
+    }));
+
+    res.json(friends);
+  })
+);
+
 
 
 
@@ -1744,6 +1811,114 @@ app.get(
     res.json(results);
   })
 );
+
+
+// GET all incoming friend-requests for a given user (pending)
+app.get(
+  '/api/users/:userId/requests/incoming',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const other = Number(req.params.userId);
+
+    // fetch requester_id rows where target = other
+    const { data: rows, error } = await supabase
+      .from('friend_requests')
+      .select('requester_id, created_at')
+      .eq('target_id', other);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    const incoming = await Promise.all(
+      rows.map(async ({ requester_id, created_at }) => {
+        const { data: u } = await supabase
+          .from('useraccount')
+          .select('userid, username, avatar_url')
+          .eq('userid', requester_id)
+          .single();
+        return {
+          id:        u.userid,
+          username:  u.username,
+          avatar:    u.avatar_url,
+          sentAt:    created_at
+        };
+      })
+    );
+
+    res.json(incoming);
+  })
+);
+
+// GET all outgoing friend-requests for a given user (pending)
+app.get(
+  '/api/users/:userId/requests/outgoing',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const other = Number(req.params.userId);
+
+    // fetch target_id rows where requester = other
+    const { data: rows, error } = await supabase
+      .from('friend_requests')
+      .select('target_id, created_at')
+      .eq('requester_id', other);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    const outgoing = await Promise.all(
+      rows.map(async ({ target_id, created_at }) => {
+        const { data: u } = await supabase
+          .from('useraccount')
+          .select('userid, username, avatar_url')
+          .eq('userid', target_id)
+          .single();
+        return {
+          id:        u.userid,
+          username:  u.username,
+          avatar:    u.avatar_url,
+          sentAt:    created_at
+        };
+      })
+    );
+
+    res.json(outgoing);
+  })
+);
+
+// GET all accepted friends for a given user
+app.get(
+  '/api/users/:userId/friends',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const other = Number(req.params.userId);
+
+    const { data: rows, error } = await supabase
+      .from('friendships')
+      .select('user_a, user_b, created_at')
+      .or(`user_a.eq.${other},user_b.eq.${other}`);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    const friends = await Promise.all(
+      rows.map(async ({ user_a, user_b, created_at }) => {
+        const peer = user_a === other ? user_b : user_a;
+        const { data: u } = await supabase
+          .from('useraccount')
+          .select('userid, username, avatar_url')
+          .eq('userid', peer)
+          .single();
+        return {
+          id:        u.userid,
+          username:  u.username,
+          avatar:    u.avatar_url,
+          friendedAt: created_at
+        };
+      })
+    );
+
+    res.json(friends);
+  })
+);
+
+
 
 //
 // ───────────── MESSAGING ─────────────
