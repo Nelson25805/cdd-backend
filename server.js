@@ -1589,6 +1589,30 @@ app.delete(
   })
 );
 
+// DELETE an incoming request (decline)
+// current user = target, param = requester’s id
+app.delete(
+  '/api/friends/requests/incoming/:requesterId',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me        = req.user.userid;
+    const requester = Number(req.params.requesterId);
+
+    // delete the request where requester_id = requester AND target_id = me
+    const { error } = await supabase
+      .from('friend_requests')
+      .delete()
+      .match({ requester_id: requester, target_id: me });
+
+    if (error) {
+      console.error('Error declining request:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ success: true });
+  })
+);
+
 // Server: GET /api/friends/requests/incoming
 app.get(
   '/api/friends/requests/incoming',
