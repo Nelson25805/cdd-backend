@@ -111,35 +111,94 @@ app.post('/api/token/refresh', asyncHandler(async (req, res) => {
 }));
 
 // Registration
-app.post('/register', asyncHandler(async (req, res) => {
-    const { username, email, password, admin } = req.body;
-    // check existing user
-    const { data: existing, error: existErr } = await supabase
-        .from('useraccount')
-        .select('email')
-        .eq('email', email);
-    if (existErr) throw existErr;
-    if (existing.length) return res.status(400).json({ error: 'Email in use.' });
+app.post(
+    '/register',
+    asyncHandler(async (req, res) => {
+        const { username, email, password, admin } = req.body;
 
-    const hashed = await bcrypt.hash(password, 10);
-    await supabase.from('useraccount').insert([{ username, email, password: hashed, admin: admin ? 1 : 0 }]);
-    const { data: newUser } = await supabase.from('useraccount').select('*').eq('email', email).single();
+        console.log('Incoming files:', req.files);
 
-    const accessToken = generateAccessToken(newUser);
-    const refreshToken = generateRefreshToken(newUser);
+        // 1) Check for existing email
+        const { data: existing, error: existErr } = await supabase
+            .from('useraccount')
+            .select('email')
+            .eq('email', email);
+        if (existErr) throw existErr;
+        if (existing.length) {
+            return res.status(400).json({ error: 'Email in use.' });
+        }
 
-    // Set HttpOnly cookie
-    res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,           // MUST be true for SameSite=None
-        sameSite: 'None',       // ← allow cross-site
-        path: '/',
-    });
+        // 2) Hash password
+        const hashed = await bcrypt.hash(password, 10);
 
+        // 3) Handle avatar upload if provided
+        let avatar_url = null;
+        if (req.files?.avatar) {
+            const { avatar } = req.files;
+            // this path is *inside* the bucket
+            const objectPath = `${Date.now()}_${avatar.name}`;
 
-    const safeUser = { userid: newUser.userid, username: newUser.username, email: newUser.email, admin: newUser.admin };
-    res.status(201).json({ accessToken, user: safeUser });
-}));
+            // 1️⃣ Upload to the 'avatars' bucket
+            const { data: uploadData, error: uploadErr } = await supabase
+                .storage
+                .from('avatars')
+                .upload(objectPath, avatar.data, {
+                    contentType: avatar.mimetype,
+                    upsert: false
+                });
+            if (uploadErr) throw uploadErr;
+
+            // 2️⃣ Grab the *public* URL
+            const { data: urlData, error: urlErr } = supabase
+                .storage
+                .from('avatars')
+                .getPublicUrl(objectPath);
+            if (urlErr) throw urlErr;
+
+            avatar_url = urlData.publicUrl;
+        }
+
+        // 4) Create the user row (including avatar_url)
+        const newRow = {
+            username,
+            email,
+            password: hashed,
+            admin: admin ? 1 : 0,
+            avatar_url
+        };
+        const { data: inserted, error: insertErr } = await supabase
+            .from('useraccount')
+            .insert(newRow)
+            .select('*')
+            .single();
+        if (insertErr) throw insertErr;
+
+        // 5) Generate tokens & set refresh cookie
+        const accessToken = generateAccessToken(inserted);
+        const refreshToken = generateRefreshToken(inserted);
+        res.cookie('refreshToken', refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'None',
+            path: '/',
+        });
+
+        // 6) Return the safe user object
+        const safeUser = {
+            userid: inserted.userid,
+            username: inserted.username,
+            email: inserted.email,
+            admin: inserted.admin,
+            avatar: inserted.avatar_url
+        };
+        res.status(201).json({
+            accessToken,
+            refreshToken,
+            user: safeUser
+        });
+    })
+);
+
 
 // Login
 app.post('/login', asyncHandler(async (req, res) => {
@@ -508,91 +567,91 @@ app.delete('/api/removewishlist/:userId/:gameId', passport.authenticate('jwt', {
 
 // GET the consoles for a wishlist item
 app.get(
-  '/api/get-wishlist-details/:userId/:gameId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const userId = Number(req.params.userId);
-    const gameId = Number(req.params.gameId);
+    '/api/get-wishlist-details/:userId/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
+        const gameId = Number(req.params.gameId);
 
-    // 1) First grab the wishlistid
-    const { data: wl, error: wlErr } = await supabase
-      .from('vgwishlist')
-      .select('wishlistid')
-      .eq('userid', userId)
-      .eq('gameid', gameId)
-      .single();
+        // 1) First grab the wishlistid
+        const { data: wl, error: wlErr } = await supabase
+            .from('vgwishlist')
+            .select('wishlistid')
+            .eq('userid', userId)
+            .eq('gameid', gameId)
+            .single();
 
-    if (wlErr || !wl) {
-      console.error('Error fetching wishlist parent:', wlErr);
-      return res.status(404).json({ error: 'Wishlist item not found.' });
-    }
+        if (wlErr || !wl) {
+            console.error('Error fetching wishlist parent:', wlErr);
+            return res.status(404).json({ error: 'Wishlist item not found.' });
+        }
 
-    // 2) Now fetch child consoles for that wishlistid
-    const { data: rows, error } = await supabase
-      .from('vgwishlist_console')
-      .select('console ( consoleid, name )')
-      .eq('wishlistid', wl.wishlistid);
+        // 2) Now fetch child consoles for that wishlistid
+        const { data: rows, error } = await supabase
+            .from('vgwishlist_console')
+            .select('console ( consoleid, name )')
+            .eq('wishlistid', wl.wishlistid);
 
-    if (error) {
-      console.error('Error fetching wishlist consoles:', error);
-      return res.status(500).json({ error: 'Error fetching wishlist consoles.' });
-    }
+        if (error) {
+            console.error('Error fetching wishlist consoles:', error);
+            return res.status(500).json({ error: 'Error fetching wishlist consoles.' });
+        }
 
-    // unwrap and return
-    const consoles = (rows || []).map(r => r.console);
-    res.json({ consoles });
-  })
+        // unwrap and return
+        const consoles = (rows || []).map(r => r.console);
+        res.json({ consoles });
+    })
 );
 
 // PUT update consoles on a wishlist entry
 app.put(
-  '/api/edit-wishlist/:userId/:gameId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const userId = Number(req.params.userId);
-    const gameId = Number(req.params.gameId);
-    const { consoleIds } = req.body;
+    '/api/edit-wishlist/:userId/:gameId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = Number(req.params.userId);
+        const gameId = Number(req.params.gameId);
+        const { consoleIds } = req.body;
 
-    // 1) Fetch the wishlistid first
-    const { data: wl, error: wlErr } = await supabase
-      .from('vgwishlist')
-      .select('wishlistid')
-      .eq('userid', userId)
-      .eq('gameid', gameId)
-      .single();
-    if (wlErr || !wl) {
-      console.error('Error fetching wishlist parent:', wlErr);
-      return res.status(404).json({ error: 'Wishlist item not found.' });
-    }
-    const wishlistid = wl.wishlistid;
+        // 1) Fetch the wishlistid first
+        const { data: wl, error: wlErr } = await supabase
+            .from('vgwishlist')
+            .select('wishlistid')
+            .eq('userid', userId)
+            .eq('gameid', gameId)
+            .single();
+        if (wlErr || !wl) {
+            console.error('Error fetching wishlist parent:', wlErr);
+            return res.status(404).json({ error: 'Wishlist item not found.' });
+        }
+        const wishlistid = wl.wishlistid;
 
-    // 2) Delete old child links by wishlistid
-    const { error: delErr } = await supabase
-      .from('vgwishlist_console')
-      .delete()
-      .eq('wishlistid', wishlistid);
-    if (delErr) {
-      console.error('Error deleting old consoles:', delErr);
-      throw delErr;
-    }
+        // 2) Delete old child links by wishlistid
+        const { error: delErr } = await supabase
+            .from('vgwishlist_console')
+            .delete()
+            .eq('wishlistid', wishlistid);
+        if (delErr) {
+            console.error('Error deleting old consoles:', delErr);
+            throw delErr;
+        }
 
-    // 3) Insert new ones
-    if (Array.isArray(consoleIds) && consoleIds.length) {
-      const rows = consoleIds.map(cid => ({
-        wishlistid,
-        consoleid: cid
-      }));
-      const { error: insErr } = await supabase
-        .from('vgwishlist_console')
-        .insert(rows);
-      if (insErr) {
-        console.error('Error inserting new consoles:', insErr);
-        throw insErr;
-      }
-    }
+        // 3) Insert new ones
+        if (Array.isArray(consoleIds) && consoleIds.length) {
+            const rows = consoleIds.map(cid => ({
+                wishlistid,
+                consoleid: cid
+            }));
+            const { error: insErr } = await supabase
+                .from('vgwishlist_console')
+                .insert(rows);
+            if (insErr) {
+                console.error('Error inserting new consoles:', insErr);
+                throw insErr;
+            }
+        }
 
-    res.status(200).json({ message: 'Wishlist updated successfully' });
-  })
+        res.status(200).json({ message: 'Wishlist updated successfully' });
+    })
 );
 
 
@@ -1451,202 +1510,202 @@ app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHand
 // 1) Search users by username (partial match), exclude yourself,
 //    return flags for pending request and existing friendship.
 app.get(
-  '/api/users/search',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me = req.user.userid;
-    const q  = req.query.q || '';
+    '/api/users/search',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const q = req.query.q || '';
 
-    // find matching users (excluding yourself)
-    const { data: users } = await supabase
-      .from('useraccount')
-      .select('userid, username')
-      .ilike('username', `%${q}%`)
-      .neq('userid', me);
+        // find matching users (excluding yourself)
+        const { data: users } = await supabase
+            .from('useraccount')
+            .select('userid, username')
+            .ilike('username', `%${q}%`)
+            .neq('userid', me);
 
-    // for each user, check friend_requests & friendships
-    const results = await Promise.all(users.map(async u => {
-      // pending request?
-      const { count: reqCount } = await supabase
-        .from('friend_requests')
-        .select('*', { count: 'exact' })
-        .match({ requester_id: me, target_id: u.userid });
+        // for each user, check friend_requests & friendships
+        const results = await Promise.all(users.map(async u => {
+            // pending request?
+            const { count: reqCount } = await supabase
+                .from('friend_requests')
+                .select('*', { count: 'exact' })
+                .match({ requester_id: me, target_id: u.userid });
 
-      // already friends?
-      const { count: friCount } = await supabase
-        .from('friendships')
-        .select('*', { count: 'exact' })
-        .or(
-          `and(user_a.eq.${me},user_b.eq.${u.userid}),` +
-          `and(user_a.eq.${u.userid},user_b.eq.${me})`
-        );
+            // already friends?
+            const { count: friCount } = await supabase
+                .from('friendships')
+                .select('*', { count: 'exact' })
+                .or(
+                    `and(user_a.eq.${me},user_b.eq.${u.userid}),` +
+                    `and(user_a.eq.${u.userid},user_b.eq.${me})`
+                );
 
-      return {
-        id:          u.userid,
-        username:    u.username,
-        requestSent: reqCount > 0,
-        isFriend:    friCount > 0,
-      };
-    }));
+            return {
+                id: u.userid,
+                username: u.username,
+                requestSent: reqCount > 0,
+                isFriend: friCount > 0,
+            };
+        }));
 
-    res.json(results);
-  })
+        res.json(results);
+    })
 );
 
 // 2) Send a friend request
 app.post(
-  '/api/friends/request/:targetId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me     = req.user.userid;
-    const target = Number(req.params.targetId);
+    '/api/friends/request/:targetId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const target = Number(req.params.targetId);
 
-    await supabase
-      .from('friend_requests')
-      .insert({ requester_id: me, target_id: target });
+        await supabase
+            .from('friend_requests')
+            .insert({ requester_id: me, target_id: target });
 
-    res.json({ success: true });
-  })
+        res.json({ success: true });
+    })
 );
 
 // 3) Cancel a pending request
 app.delete(
-  '/api/friends/request/:targetId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me     = req.user.userid;
-    const target = Number(req.params.targetId);
+    '/api/friends/request/:targetId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const target = Number(req.params.targetId);
 
-    await supabase
-      .from('friend_requests')
-      .delete()
-      .match({ requester_id: me, target_id: target });
+        await supabase
+            .from('friend_requests')
+            .delete()
+            .match({ requester_id: me, target_id: target });
 
-    res.json({ success: true });
-  })
+        res.json({ success: true });
+    })
 );
 
 // 4) Accept a friend request (and upsert chat thread + return its ID)
 app.post(
-  '/api/friends/accept/:requesterId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me        = req.user.userid;
-    const requester = Number(req.params.requesterId);
+    '/api/friends/accept/:requesterId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const requester = Number(req.params.requesterId);
 
-    // 1. remove the pending request
-    await supabase
-      .from('friend_requests')
-      .delete()
-      .match({ requester_id: requester, target_id: me });
+        // 1. remove the pending request
+        await supabase
+            .from('friend_requests')
+            .delete()
+            .match({ requester_id: requester, target_id: me });
 
-    // 2. insert into friendships
-    const [a, b] = [Math.min(me, requester), Math.max(me, requester)];
-    await supabase
-      .from('friendships')
-      .insert({ user_a: a, user_b: b });
+        // 2. insert into friendships
+        const [a, b] = [Math.min(me, requester), Math.max(me, requester)];
+        await supabase
+            .from('friendships')
+            .insert({ user_a: a, user_b: b });
 
-    // 3. upsert the chat_threads row and return its id
-    const { data: threadData, error: threadErr } = await supabase
-      .from('chat_threads')
-      .upsert(
-        { user_a: a, user_b: b },
-        { onConflict: ['user_a','user_b'], returning: 'representation' }
-      )
-      .select('id')
-      .single();
+        // 3. upsert the chat_threads row and return its id
+        const { data: threadData, error: threadErr } = await supabase
+            .from('chat_threads')
+            .upsert(
+                { user_a: a, user_b: b },
+                { onConflict: ['user_a', 'user_b'], returning: 'representation' }
+            )
+            .select('id')
+            .single();
 
-    if (threadErr || !threadData) {
-      console.error('Error upserting/fetching chat thread:', threadErr);
-      return res.status(500).json({ error: 'Could not determine chat thread.' });
-    }
+        if (threadErr || !threadData) {
+            console.error('Error upserting/fetching chat thread:', threadErr);
+            return res.status(500).json({ error: 'Could not determine chat thread.' });
+        }
 
-    // 4. return the threadId to the client
-    res.json({ success: true, threadId: threadData.id });
-  })
+        // 4. return the threadId to the client
+        res.json({ success: true, threadId: threadData.id });
+    })
 );
 
 
 
 // 5) Unfriend (delete from friendships)
 app.delete(
-  '/api/friends/:otherId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me    = req.user.userid;
-    const other = Number(req.params.otherId);
+    '/api/friends/:otherId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const other = Number(req.params.otherId);
 
-    await supabase
-      .from('friendships')
-      .delete()
-      .or(
-        `and(user_a.eq.${me},user_b.eq.${other}),` +
-        `and(user_a.eq.${other},user_b.eq.${me})`
-      );
+        await supabase
+            .from('friendships')
+            .delete()
+            .or(
+                `and(user_a.eq.${me},user_b.eq.${other}),` +
+                `and(user_a.eq.${other},user_b.eq.${me})`
+            );
 
-    res.json({ success: true });
-  })
+        res.json({ success: true });
+    })
 );
 
 // DELETE an incoming request (decline)
 // current user = target, param = requester’s id
 app.delete(
-  '/api/friends/requests/incoming/:requesterId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me        = req.user.userid;
-    const requester = Number(req.params.requesterId);
+    '/api/friends/requests/incoming/:requesterId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const requester = Number(req.params.requesterId);
 
-    // delete the request where requester_id = requester AND target_id = me
-    const { error } = await supabase
-      .from('friend_requests')
-      .delete()
-      .match({ requester_id: requester, target_id: me });
+        // delete the request where requester_id = requester AND target_id = me
+        const { error } = await supabase
+            .from('friend_requests')
+            .delete()
+            .match({ requester_id: requester, target_id: me });
 
-    if (error) {
-      console.error('Error declining request:', error);
-      return res.status(500).json({ error: error.message });
-    }
+        if (error) {
+            console.error('Error declining request:', error);
+            return res.status(500).json({ error: error.message });
+        }
 
-    res.json({ success: true });
-  })
+        res.json({ success: true });
+    })
 );
 
 // Server: GET /api/friends/requests/incoming
 app.get(
-  '/api/friends/requests/incoming',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me = req.user.userid;
-    const { data: rows, error } = await supabase
-      .from('friend_requests')
-      .select('requester_id')
-      .eq('target_id', me);
+    '/api/friends/requests/incoming',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const { data: rows, error } = await supabase
+            .from('friend_requests')
+            .select('requester_id')
+            .eq('target_id', me);
 
-    if (error) {
-      console.error('Error fetching friend_requests:', error);
-      return res.status(500).json({ error: 'Database error.' });
-    }
+        if (error) {
+            console.error('Error fetching friend_requests:', error);
+            return res.status(500).json({ error: 'Database error.' });
+        }
 
-    // ensure rows is an array
-    const pending = Array.isArray(rows) ? rows : [];
+        // ensure rows is an array
+        const pending = Array.isArray(rows) ? rows : [];
 
-    const requests = await Promise.all(pending.map(async ({ requester_id }) => {
-      const { data: u, error: userErr } = await supabase
-        .from('useraccount')
-        .select('userid, username, avatar_url')
-        .eq('userid', requester_id)
-        .single();
-      if (userErr) throw userErr;
-      return {
-        requesterId: u.userid,
-        username:    u.username,
-        avatar:      u.avatar_url
-      };
-    }));
+        const requests = await Promise.all(pending.map(async ({ requester_id }) => {
+            const { data: u, error: userErr } = await supabase
+                .from('useraccount')
+                .select('userid, username, avatar_url')
+                .eq('userid', requester_id)
+                .single();
+            if (userErr) throw userErr;
+            return {
+                requesterId: u.userid,
+                username: u.username,
+                avatar: u.avatar_url
+            };
+        }));
 
-    res.json(requests);
-  })
+        res.json(requests);
+    })
 );
 
 
@@ -1654,53 +1713,53 @@ app.get(
 
 // 11) List all your current friends + their chat thread IDs
 app.get(
-  '/api/friends',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me = req.user.userid;
+    '/api/friends',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
 
-    // 1️⃣ Fetch all friendships involving me
-    const { data: rows, error } = await supabase
-      .from('friendships')
-      .select('user_a, user_b')
-      .or(`user_a.eq.${me},user_b.eq.${me}`);
+        // 1️⃣ Fetch all friendships involving me
+        const { data: rows, error } = await supabase
+            .from('friendships')
+            .select('user_a, user_b')
+            .or(`user_a.eq.${me},user_b.eq.${me}`);
 
-    if (error) {
-      console.error('Error fetching friendships:', error);
-      return res.status(500).json({ error: 'Database error.' });
-    }
+        if (error) {
+            console.error('Error fetching friendships:', error);
+            return res.status(500).json({ error: 'Database error.' });
+        }
 
-    // 2️⃣ For each row, determine the other user id and lookup thread
-    const friends = await Promise.all(rows.map(async ({ user_a, user_b }) => {
-      const other = user_a === me ? user_b : user_a;
+        // 2️⃣ For each row, determine the other user id and lookup thread
+        const friends = await Promise.all(rows.map(async ({ user_a, user_b }) => {
+            const other = user_a === me ? user_b : user_a;
 
-      // fetch their basic profile (username, avatar)
-      const { data: u } = await supabase
-        .from('useraccount')
-        .select('userid, username, avatar_url')
-        .eq('userid', other)
-        .single();
+            // fetch their basic profile (username, avatar)
+            const { data: u } = await supabase
+                .from('useraccount')
+                .select('userid, username, avatar_url')
+                .eq('userid', other)
+                .single();
 
-      // fetch the chat thread
-      const { data: threadRow } = await supabase
-        .from('chat_threads')
-        .select('id')
-        .match({
-          user_a: Math.min(me, other),
-          user_b: Math.max(me, other)
-        })
-        .single();
+            // fetch the chat thread
+            const { data: threadRow } = await supabase
+                .from('chat_threads')
+                .select('id')
+                .match({
+                    user_a: Math.min(me, other),
+                    user_b: Math.max(me, other)
+                })
+                .single();
 
-      return {
-        id:         u.userid,
-        username:   u.username,
-        avatar:     u.avatar_url,
-        threadId:   threadRow?.id
-      };
-    }));
+            return {
+                id: u.userid,
+                username: u.username,
+                avatar: u.avatar_url,
+                threadId: threadRow?.id
+            };
+        }));
 
-    res.json(friends);
-  })
+        res.json(friends);
+    })
 );
 
 
@@ -1713,232 +1772,232 @@ app.get(
 
 // 6) Public user profile, plus isFriend flag & chatThreadId
 app.get(
-  '/api/users/:userId/profile',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me    = req.user.userid;
-    const other = Number(req.params.userId);
+    '/api/users/:userId/profile',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
+        const other = Number(req.params.userId);
 
-    // 1️⃣ Fetch exactly one user row
-    const { data: u, error: userErr } = await supabase
-      .from('useraccount')
-      .select('userid, username, avatar_url, bio')
-      .eq('userid', other)
-      .single();
+        // 1️⃣ Fetch exactly one user row
+        const { data: u, error: userErr } = await supabase
+            .from('useraccount')
+            .select('userid, username, avatar_url, bio')
+            .eq('userid', other)
+            .single();
 
-    if (userErr) {
-      console.error('Error fetching user profile:', userErr);
-      return res.status(500).json({ error: 'Database error reading user.' });
-    }
-    if (!u) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
+        if (userErr) {
+            console.error('Error fetching user profile:', userErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
+        }
+        if (!u) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
 
-    // 2️⃣ Check friendship count
-    const { count: friCount, error: friErr } = await supabase
-      .from('friendships')
-      .select('*', { count: 'exact' })
-      .or(
-        `and(user_a.eq.${me},user_b.eq.${other}),` +
-        `and(user_a.eq.${other},user_b.eq.${me})`
-      );
+        // 2️⃣ Check friendship count
+        const { count: friCount, error: friErr } = await supabase
+            .from('friendships')
+            .select('*', { count: 'exact' })
+            .or(
+                `and(user_a.eq.${me},user_b.eq.${other}),` +
+                `and(user_a.eq.${other},user_b.eq.${me})`
+            );
 
-    if (friErr) {
-      console.error('Error checking friendship:', friErr);
-      return res.status(500).json({ error: 'Database error checking friendship.' });
-    }
+        if (friErr) {
+            console.error('Error checking friendship:', friErr);
+            return res.status(500).json({ error: 'Database error checking friendship.' });
+        }
 
-    // 3️⃣ Look up (or create) a chat thread
-    let threadId = null;
-    const { data: thread, error: threadErr } = await supabase
-      .from('chat_threads')
-      .select('id')
-      .or(
-        `and(user_a.eq.${me},user_b.eq.${other}),` +
-        `and(user_a.eq.${other},user_b.eq.${me})`
-      )
-      .single();
+        // 3️⃣ Look up (or create) a chat thread
+        let threadId = null;
+        const { data: thread, error: threadErr } = await supabase
+            .from('chat_threads')
+            .select('id')
+            .or(
+                `and(user_a.eq.${me},user_b.eq.${other}),` +
+                `and(user_a.eq.${other},user_b.eq.${me})`
+            )
+            .single();
 
-    if (threadErr && threadErr.code !== 'PGRST116') { // 116 = no rows
-      console.error('Error fetching chat thread:', threadErr);
-      return res.status(500).json({ error: 'Database error fetching chat thread.' });
-    }
-    threadId = thread?.id ?? null;
+        if (threadErr && threadErr.code !== 'PGRST116') { // 116 = no rows
+            console.error('Error fetching chat thread:', threadErr);
+            return res.status(500).json({ error: 'Database error fetching chat thread.' });
+        }
+        threadId = thread?.id ?? null;
 
-    // 4️⃣ Return the combined profile
-    res.json({
-      id:           u.userid,
-      username:     u.username,
-      avatar:       u.avatar_url,
-      bio:          u.bio,
-      isFriend:     (friCount || 0) > 0,
-      chatThreadId: threadId,
-    });
-  })
+        // 4️⃣ Return the combined profile
+        res.json({
+            id: u.userid,
+            username: u.username,
+            avatar: u.avatar_url,
+            bio: u.bio,
+            isFriend: (friCount || 0) > 0,
+            chatThreadId: threadId,
+        });
+    })
 );
 
 
 // 7) Fetch another user’s collection
 app.get(
-  '/api/users/:userId/collection',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const other = Number(req.params.userId);
+    '/api/users/:userId/collection',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const other = Number(req.params.userId);
 
-    // reuse your existing logic: fetch from vgcollection, join gameinfo and consoles
-    // example simplest form:
-    const { data } = await supabase
-      .from('vgcollection')
-      .select(`
+        // reuse your existing logic: fetch from vgcollection, join gameinfo and consoles
+        // example simplest form:
+        const { data } = await supabase
+            .from('vgcollection')
+            .select(`
         gameid,
         gameinfo(name, coverart),
         vgcollection_console(console (consoleid, name))
       `)
-      .eq('userid', other);
+            .eq('userid', other);
 
-    // map to the shape your frontend expects
-    const results = data.map(row => ({
-      GameId:  row.gameid,
-      Name:    row.gameinfo.name,
-      CoverArt:row.gameinfo.coverart,
-      Consoles: row.vgcollection_console.map(c => c.console),
-    }));
+        // map to the shape your frontend expects
+        const results = data.map(row => ({
+            GameId: row.gameid,
+            Name: row.gameinfo.name,
+            CoverArt: row.gameinfo.coverart,
+            Consoles: row.vgcollection_console.map(c => c.console),
+        }));
 
-    res.json(results);
-  })
+        res.json(results);
+    })
 );
 
 // 8) Fetch another user’s wishlist
 app.get(
-  '/api/users/:userId/wishlist',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const other = Number(req.params.userId);
+    '/api/users/:userId/wishlist',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const other = Number(req.params.userId);
 
-    const { data } = await supabase
-      .from('vgwishlist')
-      .select(`
+        const { data } = await supabase
+            .from('vgwishlist')
+            .select(`
         gameid,
         gameinfo(name, coverart),
         vgwishlist_console(console (consoleid, name))
       `)
-      .eq('userid', other);
+            .eq('userid', other);
 
-    const results = data.map(row => ({
-      GameId:  row.gameid,
-      Name:    row.gameinfo.name,
-      CoverArt:row.gameinfo.coverart,
-      Consoles: row.vgwishlist_console.map(c => c.console),
-    }));
+        const results = data.map(row => ({
+            GameId: row.gameid,
+            Name: row.gameinfo.name,
+            CoverArt: row.gameinfo.coverart,
+            Consoles: row.vgwishlist_console.map(c => c.console),
+        }));
 
-    res.json(results);
-  })
+        res.json(results);
+    })
 );
 
 
 // GET all incoming friend-requests for a given user (pending)
 app.get(
-  '/api/users/:userId/requests/incoming',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const other = Number(req.params.userId);
+    '/api/users/:userId/requests/incoming',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const other = Number(req.params.userId);
 
-    // fetch requester_id rows where target = other
-    const { data: rows, error } = await supabase
-      .from('friend_requests')
-      .select('requester_id, created_at')
-      .eq('target_id', other);
+        // fetch requester_id rows where target = other
+        const { data: rows, error } = await supabase
+            .from('friend_requests')
+            .select('requester_id, created_at')
+            .eq('target_id', other);
 
-    if (error) return res.status(500).json({ error: error.message });
+        if (error) return res.status(500).json({ error: error.message });
 
-    const incoming = await Promise.all(
-      rows.map(async ({ requester_id, created_at }) => {
-        const { data: u } = await supabase
-          .from('useraccount')
-          .select('userid, username, avatar_url')
-          .eq('userid', requester_id)
-          .single();
-        return {
-          id:        u.userid,
-          username:  u.username,
-          avatar:    u.avatar_url,
-          sentAt:    created_at
-        };
-      })
-    );
+        const incoming = await Promise.all(
+            rows.map(async ({ requester_id, created_at }) => {
+                const { data: u } = await supabase
+                    .from('useraccount')
+                    .select('userid, username, avatar_url')
+                    .eq('userid', requester_id)
+                    .single();
+                return {
+                    id: u.userid,
+                    username: u.username,
+                    avatar: u.avatar_url,
+                    sentAt: created_at
+                };
+            })
+        );
 
-    res.json(incoming);
-  })
+        res.json(incoming);
+    })
 );
 
 // GET all outgoing friend-requests for a given user (pending)
 app.get(
-  '/api/users/:userId/requests/outgoing',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const other = Number(req.params.userId);
+    '/api/users/:userId/requests/outgoing',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const other = Number(req.params.userId);
 
-    // fetch target_id rows where requester = other
-    const { data: rows, error } = await supabase
-      .from('friend_requests')
-      .select('target_id, created_at')
-      .eq('requester_id', other);
+        // fetch target_id rows where requester = other
+        const { data: rows, error } = await supabase
+            .from('friend_requests')
+            .select('target_id, created_at')
+            .eq('requester_id', other);
 
-    if (error) return res.status(500).json({ error: error.message });
+        if (error) return res.status(500).json({ error: error.message });
 
-    const outgoing = await Promise.all(
-      rows.map(async ({ target_id, created_at }) => {
-        const { data: u } = await supabase
-          .from('useraccount')
-          .select('userid, username, avatar_url')
-          .eq('userid', target_id)
-          .single();
-        return {
-          id:        u.userid,
-          username:  u.username,
-          avatar:    u.avatar_url,
-          sentAt:    created_at
-        };
-      })
-    );
+        const outgoing = await Promise.all(
+            rows.map(async ({ target_id, created_at }) => {
+                const { data: u } = await supabase
+                    .from('useraccount')
+                    .select('userid, username, avatar_url')
+                    .eq('userid', target_id)
+                    .single();
+                return {
+                    id: u.userid,
+                    username: u.username,
+                    avatar: u.avatar_url,
+                    sentAt: created_at
+                };
+            })
+        );
 
-    res.json(outgoing);
-  })
+        res.json(outgoing);
+    })
 );
 
 // GET all accepted friends for a given user
 app.get(
-  '/api/users/:userId/friends',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const other = Number(req.params.userId);
+    '/api/users/:userId/friends',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const other = Number(req.params.userId);
 
-    const { data: rows, error } = await supabase
-      .from('friendships')
-      .select('user_a, user_b, created_at')
-      .or(`user_a.eq.${other},user_b.eq.${other}`);
+        const { data: rows, error } = await supabase
+            .from('friendships')
+            .select('user_a, user_b, created_at')
+            .or(`user_a.eq.${other},user_b.eq.${other}`);
 
-    if (error) return res.status(500).json({ error: error.message });
+        if (error) return res.status(500).json({ error: error.message });
 
-    const friends = await Promise.all(
-      rows.map(async ({ user_a, user_b, created_at }) => {
-        const peer = user_a === other ? user_b : user_a;
-        const { data: u } = await supabase
-          .from('useraccount')
-          .select('userid, username, avatar_url')
-          .eq('userid', peer)
-          .single();
-        return {
-          id:        u.userid,
-          username:  u.username,
-          avatar:    u.avatar_url,
-          friendedAt: created_at
-        };
-      })
-    );
+        const friends = await Promise.all(
+            rows.map(async ({ user_a, user_b, created_at }) => {
+                const peer = user_a === other ? user_b : user_a;
+                const { data: u } = await supabase
+                    .from('useraccount')
+                    .select('userid, username, avatar_url')
+                    .eq('userid', peer)
+                    .single();
+                return {
+                    id: u.userid,
+                    username: u.username,
+                    avatar: u.avatar_url,
+                    friendedAt: created_at
+                };
+            })
+        );
 
-    res.json(friends);
-  })
+        res.json(friends);
+    })
 );
 
 
@@ -1949,50 +2008,50 @@ app.get(
 
 // 9) Get messages in a thread
 app.get(
-  '/api/messages/:threadId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const threadId = Number(req.params.threadId);
-    const { data } = await supabase
-      .from('chat_messages')
-      .select('id, sender_id, text, sent_at, sender:sender_id(username)')
-      .eq('thread_id', threadId)
-      .order('sent_at', { ascending: true });
+    '/api/messages/:threadId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const threadId = Number(req.params.threadId);
+        const { data } = await supabase
+            .from('chat_messages')
+            .select('id, sender_id, text, sent_at, sender:sender_id(username)')
+            .eq('thread_id', threadId)
+            .order('sent_at', { ascending: true });
 
-    // flatten sender username
-    const messages = data.map(m => ({
-      id:         m.id,
-      senderId:   m.sender_id,
-      senderName: m.sender.username,
-      text:       m.text,
-      timestamp:  m.sent_at,
-    }));
+        // flatten sender username
+        const messages = data.map(m => ({
+            id: m.id,
+            senderId: m.sender_id,
+            senderName: m.sender.username,
+            text: m.text,
+            timestamp: m.sent_at,
+        }));
 
-    res.json(messages);
-  })
+        res.json(messages);
+    })
 );
 
 // 10) Send a message
 app.post(
-  '/api/messages/:threadId',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const threadId = Number(req.params.threadId);
-    const senderId = req.user.userid;
-    const { text } = req.body;
+    '/api/messages/:threadId',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const threadId = Number(req.params.threadId);
+        const senderId = req.user.userid;
+        const { text } = req.body;
 
-    const { data } = await supabase
-      .from('chat_messages')
-      .insert([{ thread_id: threadId, sender_id: senderId, text }])
-      .select('id, sender_id, text, sent_at');
+        const { data } = await supabase
+            .from('chat_messages')
+            .insert([{ thread_id: threadId, sender_id: senderId, text }])
+            .select('id, sender_id, text, sent_at');
 
-    const sent = data[0];
-    res.json({
-      id:         sent.id,
-      senderId:   sent.sender_id,
-      senderName: req.user.username,
-      text:       sent.text,
-      timestamp:  sent.sent_at,
-    });
-  })
+        const sent = data[0];
+        res.json({
+            id: sent.id,
+            senderId: sent.sender_id,
+            senderName: req.user.username,
+            text: sent.text,
+            timestamp: sent.sent_at,
+        });
+    })
 );
