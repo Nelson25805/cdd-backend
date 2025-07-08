@@ -1526,7 +1526,7 @@ app.delete(
   })
 );
 
-// 4) Accept a friend request (and create friendship + chat thread)
+// 4) Accept a friend request (and upsert chat thread + return its ID)
 app.post(
   '/api/friends/accept/:requesterId',
   passport.authenticate('jwt', { session: false }),
@@ -1546,27 +1546,26 @@ app.post(
       .from('friendships')
       .insert({ user_a: a, user_b: b });
 
-    // 3. upsert chat_threads so we get a thread row
-    await supabase
+    // 3. upsert the chat_threads row and return its id
+    const { data: threadData, error: threadErr } = await supabase
       .from('chat_threads')
-      .upsert({ user_a: a, user_b: b }, { onConflict: ['user_a','user_b'] });
-
-    // 4. select the threadId
-    const { data: [threadRow], error: threadErr } = await supabase
-      .from('chat_threads')
+      .upsert(
+        { user_a: a, user_b: b },
+        { onConflict: ['user_a','user_b'], returning: 'representation' }
+      )
       .select('id')
-      .match({ user_a: a, user_b: b })
-      .limit(1);
+      .single();
 
-    if (threadErr || !threadRow) {
-      console.error('Error fetching thread after accept:', threadErr);
+    if (threadErr || !threadData) {
+      console.error('Error upserting/fetching chat thread:', threadErr);
       return res.status(500).json({ error: 'Could not determine chat thread.' });
     }
 
-    // 5. return it to the client
-    res.json({ success: true, threadId: threadRow.id });
+    // 4. return the threadId to the client
+    res.json({ success: true, threadId: threadData.id });
   })
 );
+
 
 
 // 5) Unfriend (delete from friendships)
