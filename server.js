@@ -116,8 +116,6 @@ app.post(
     asyncHandler(async (req, res) => {
         const { username, email, password, admin } = req.body;
 
-        console.log('Incoming files:', req.files);
-
         // 1) Check for existing email
         const { data: existing, error: existErr } = await supabase
             .from('useraccount')
@@ -1485,6 +1483,73 @@ app.get('/api/check-email/:email', passport.authenticate('jwt', { session: false
         res.status(500).json({ error: 'Error checking email' });
     }
 }));
+
+
+// 1A) Update avatar (upload a new one)
+app.post(
+    '/api/users/avatar',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = req.user.userid;
+
+        if (!req.files?.avatar) {
+            return res.status(400).json({ error: 'No file uploaded.' });
+        }
+
+        const avatar = req.files.avatar;
+        const objectPath = `${Date.now()}_${avatar.name}`;
+
+        // 1) upload to storage
+        const { error: uploadErr } = await supabase
+            .storage
+            .from('avatars')
+            .upload(objectPath, avatar.data, {
+                contentType: avatar.mimetype,
+                upsert: true
+            });
+        if (uploadErr) throw uploadErr;
+
+        // 2) get public URL
+        const { data: urlData, error: urlErr } = supabase
+            .storage
+            .from('avatars')
+            .getPublicUrl(objectPath);
+        if (urlErr) throw urlErr;
+
+        const avatar_url = urlData.publicUrl;
+
+        // 3) update user row
+        const { data: updated, error: updateErr } = await supabase
+            .from('useraccount')
+            .update({ avatar_url })
+            .eq('userid', userId)
+            .select('userid,username,email,admin,avatar_url')
+            .single();
+        if (updateErr) throw updateErr;
+
+        res.json({ avatar: updated.avatar_url });
+    })
+);
+
+// 1B) Remove avatar (reset to null)
+app.delete(
+    '/api/users/avatar',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const userId = req.user.userid;
+
+        // clear the column
+        const { data: updated, error } = await supabase
+            .from('useraccount')
+            .update({ avatar_url: null })
+            .eq('userid', userId)
+            .select('avatar_url')
+            .single();
+        if (error) throw error;
+
+        res.json({ avatar: null });
+    })
+);
 
 
 // Protected route example (use this structure for a "protected route")
