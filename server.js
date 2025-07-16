@@ -2078,7 +2078,7 @@ app.get(
     asyncHandler(async (req, res) => {
         const threadId = Number(req.params.threadId);
         const { data } = await supabase
-            .from('chat_messages')
+            .from('messages')
             .select('id, sender_id, text, sent_at, sender:sender_id(username)')
             .eq('thread_id', threadId)
             .order('sent_at', { ascending: true });
@@ -2106,7 +2106,7 @@ app.post(
         const { text } = req.body;
 
         const { data } = await supabase
-            .from('chat_messages')
+            .from('messages')
             .insert([{ thread_id: threadId, sender_id: senderId, text }])
             .select('id, sender_id, text, sent_at');
 
@@ -2120,3 +2120,85 @@ app.post(
         });
     })
 );
+
+
+
+// 9a) GET /api/threads/:threadId/messages
+app.get(
+    '/api/threads/:threadId/messages',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const threadId = Number(req.params.threadId);
+        const { data } = await supabase
+            .from('messages')
+            .select('id, sender_id, text, sent_at, sender:sender_id(username)')
+            .eq('thread_id', threadId)
+            .order('sent_at', { ascending: true });
+
+        const messages = (data || []).map(m => ({
+            id: m.id,
+            senderId: m.sender_id,
+            senderName: m.sender.username,
+            text: m.text,
+            timestamp: m.sent_at,
+        }));
+
+        res.json(messages);
+    })
+);
+
+// 10a) POST /api/threads/:threadId/messages
+app.post(
+    '/api/threads/:threadId/messages',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const threadId = Number(req.params.threadId);
+        const senderId = req.user.userid;
+        const { text } = req.body;
+
+        // 1) Insert + return representation
+        const { data, error } = await supabase
+            .from('messages')
+            .insert(
+                [{
+                    senderid: senderId,
+                    receiverid: threadId,    // if you intend `threadId` to be the receiver
+                    content: text,
+                    dateadded: new Date().toISOString()
+                }],
+                { returning: 'representation' }
+            )
+            .select('messageid, senderid, receiverid, content, dateadded')
+            .single();
+
+
+
+        // 2) Debug log what we got
+        console.log('POST /threads/messages →', { error, data });
+
+        // 3) Handle errors
+        if (error) {
+            console.error('Error inserting message:', error);
+            return res
+                .status(500)
+                .json({ error: 'Database error inserting message.', details: error });
+        }
+        if (!data) {
+            console.error('No data returned after insert');
+            return res
+                .status(500)
+                .json({ error: 'No message returned from database.' });
+        }
+
+        // 4) Respond with the new message
+        res.json({
+            messageid: data.messageid,
+            senderid: data.senderid,
+            receiverid: data.receiverid,
+            content: data.content,
+            dateadded: data.dateadded,
+        });
+    })
+);
+
+
