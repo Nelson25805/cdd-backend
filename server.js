@@ -1485,7 +1485,7 @@ app.get('/api/check-email/:email', passport.authenticate('jwt', { session: false
 }));
 
 
-// 1A) Update avatar (upload a new one)
+// Update avatar (upload a new one)
 app.post(
     '/api/users/avatar',
     passport.authenticate('jwt', { session: false }),
@@ -1531,7 +1531,7 @@ app.post(
     })
 );
 
-// 1B) Remove avatar (reset to null)
+// Remove avatar (reset to null)
 app.delete(
     '/api/users/avatar',
     passport.authenticate('jwt', { session: false }),
@@ -1572,8 +1572,8 @@ app.get('/profiles', passport.authenticate('jwt', { session: false }), asyncHand
 // ───────────── USER SEARCH & FRIEND REQUESTS ─────────────
 //
 
-// 1) Search users by username (partial match), exclude yourself,
-//    return flags for pending request and existing friendship.
+// Search users by username (partial match), exclude yourself,
+// return flags for pending request and existing friendship.
 app.get(
     '/api/users/search',
     passport.authenticate('jwt', { session: false }),
@@ -1617,7 +1617,7 @@ app.get(
     })
 );
 
-// 2) Send a friend request
+// Send a friend request
 app.post(
     '/api/friends/request/:targetId',
     passport.authenticate('jwt', { session: false }),
@@ -1633,7 +1633,7 @@ app.post(
     })
 );
 
-// 3) Cancel a pending request
+// Cancel a pending request
 app.delete(
     '/api/friends/request/:targetId',
     passport.authenticate('jwt', { session: false }),
@@ -1650,7 +1650,7 @@ app.delete(
     })
 );
 
-// 4) Accept a friend request (and upsert chat thread + return its ID)
+// Accept a friend request (and upsert chat thread + return its ID)
 app.post(
     '/api/friends/accept/:requesterId',
     passport.authenticate('jwt', { session: false }),
@@ -1692,7 +1692,7 @@ app.post(
 
 
 
-// 5) Unfriend (delete from friendships)
+// Unfriend (delete from friendships)
 app.delete(
     '/api/friends/:otherId',
     passport.authenticate('jwt', { session: false }),
@@ -1776,7 +1776,7 @@ app.get(
 
 
 
-// 11) List all your current friends + their chat thread IDs
+// List all your current friends + their chat thread IDs
 app.get(
     '/api/friends',
     passport.authenticate('jwt', { session: false }),
@@ -1829,13 +1829,11 @@ app.get(
 
 
 
-
-
 //
 // ───────────── USER PROFILE & OTHER’S COLLECTION/WISHLIST ─────────────
 //
 
-// 6) Public user profile, plus isFriend flag & chatThreadId
+// Public user profile, plus isFriend flag & chatThreadId
 app.get(
     '/api/users/:userId/profile',
     passport.authenticate('jwt', { session: false }),
@@ -1902,7 +1900,7 @@ app.get(
 );
 
 
-// 7) Fetch another user’s collection
+// Fetch another user’s collection
 app.get(
     '/api/users/:userId/collection',
     passport.authenticate('jwt', { session: false }),
@@ -1932,7 +1930,7 @@ app.get(
     })
 );
 
-// 8) Fetch another user’s wishlist
+// Fetch another user’s wishlist
 app.get(
     '/api/users/:userId/wishlist',
     passport.authenticate('jwt', { session: false }),
@@ -2071,7 +2069,7 @@ app.get(
 // ───────────── MESSAGING ─────────────
 //
 
-// 9) Get messages in a thread
+// Get messages in a thread
 app.get(
     '/api/messages/:threadId',
     passport.authenticate('jwt', { session: false }),
@@ -2096,7 +2094,7 @@ app.get(
     })
 );
 
-// 10) Send a message
+// Send a message
 app.post(
     '/api/messages/:threadId',
     passport.authenticate('jwt', { session: false }),
@@ -2123,7 +2121,7 @@ app.post(
 
 
 
-// 9a) GET /api/threads/:threadId/messages
+// GET /api/threads/:threadId/messages
 app.get(
     '/api/threads/:threadId/messages',
     passport.authenticate('jwt', { session: false }),
@@ -2147,7 +2145,7 @@ app.get(
     })
 );
 
-// 10a) POST /api/threads/:threadId/messages
+// POST /api/threads/:threadId/messages
 app.post(
     '/api/threads/:threadId/messages',
     passport.authenticate('jwt', { session: false }),
@@ -2200,5 +2198,3 @@ app.post(
         });
     })
 );
-
-
