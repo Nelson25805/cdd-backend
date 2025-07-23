@@ -2069,25 +2069,42 @@ app.get(
 // ───────────── MESSAGING ─────────────
 //
 
-// Get messages in a thread
+// 1) GET the full chat log for a thread
 app.get(
-    '/api/messages/:threadId',
+    '/api/threads/:threadId/messages',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
         const threadId = Number(req.params.threadId);
-        const { data } = await supabase
-            .from('messages')
-            .select('id, sender_id, text, sent_at, sender:sender_id(username)')
-            .eq('thread_id', threadId)
-            .order('sent_at', { ascending: true });
 
-        // flatten sender username
-        const messages = data.map(m => ({
-            id: m.id,
-            senderId: m.sender_id,
+        // 1️⃣ Fetch all messages for this thread, plus sender.username
+        const { data, error } = await supabase
+            .from('messages')
+            .select(`
+        messageid,
+        thread_id,
+        senderid,
+        content,
+        dateadded,
+        sender:senderid (
+          username
+        )
+      `)
+            .eq('thread_id', threadId)
+            .order('dateadded', { ascending: true });
+
+        if (error) {
+            console.error('Error fetching thread messages:', error);
+            return res.status(500).json({ error: 'Database error fetching messages.' });
+        }
+
+        // 2️⃣ Map into the shape the frontend needs
+        const messages = (data || []).map(m => ({
+            messageid: m.messageid,
+            threadId: m.thread_id,
+            senderid: m.senderid,
             senderName: m.sender.username,
-            text: m.text,
-            timestamp: m.sent_at,
+            content: m.content,
+            dateadded: m.dateadded
         }));
 
         res.json(messages);
@@ -2145,56 +2162,57 @@ app.get(
     })
 );
 
-// POST /api/threads/:threadId/messages
+// 2) POST a new message into a thread
 app.post(
     '/api/threads/:threadId/messages',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
         const threadId = Number(req.params.threadId);
         const senderId = req.user.userid;
-        const { text } = req.body;
+        const { text, receiverid } = req.body;
 
-        // 1) Insert + return representation
+        // 1️⃣ Insert with returning representation
         const { data, error } = await supabase
             .from('messages')
             .insert(
                 [{
+                    thread_id: threadId,
                     senderid: senderId,
-                    receiverid: threadId,    // if you intend `threadId` to be the receiver
-                    content: text,
+                    receiverid: receiverid,            // pass this from frontend or look up from chat_threads
+                    content:    text,
                     dateadded: new Date().toISOString()
                 }],
                 { returning: 'representation' }
             )
-            .select('messageid, senderid, receiverid, content, dateadded')
+            .select(`
+        messageid,
+        thread_id,
+        senderid,
+        content,
+        dateadded,
+        sender:senderid (
+          username
+        )
+      `)
             .single();
 
-
-
-        // 2) Debug log what we got
-        console.log('POST /threads/messages →', { error, data });
-
-        // 3) Handle errors
         if (error) {
             console.error('Error inserting message:', error);
-            return res
-                .status(500)
-                .json({ error: 'Database error inserting message.', details: error });
+            return res.status(500).json({ error: 'Database error inserting message.' });
         }
         if (!data) {
-            console.error('No data returned after insert');
-            return res
-                .status(500)
-                .json({ error: 'No message returned from database.' });
+            console.error('Insert succeeded but no data returned');
+            return res.status(500).json({ error: 'No message returned after insert.' });
         }
 
-        // 4) Respond with the new message
+        // 2️⃣ Respond with the same shape the GET uses
         res.json({
             messageid: data.messageid,
+            threadId: data.thread_id,
             senderid: data.senderid,
-            receiverid: data.receiverid,
+            senderName: data.sender.username,
             content: data.content,
-            dateadded: data.dateadded,
+            dateadded: data.dateadded
         });
     })
 );
