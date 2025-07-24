@@ -2178,9 +2178,8 @@ app.post(
                 [{
                     thread_id: threadId,
                     senderid: senderId,
-                    receiverid: receiverid,            // pass this from frontend or look up from chat_threads
-                    content:    text,
-                    dateadded: new Date().toISOString()
+                    receiverid,           
+                    content: text
                 }],
                 { returning: 'representation' }
             )
