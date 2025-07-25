@@ -2085,6 +2085,7 @@ app.get(
         senderid,
         content,
         dateadded,
+        seen,
         sender:senderid (
           username
         )
@@ -2104,37 +2105,15 @@ app.get(
             senderid: m.senderid,
             senderName: m.sender.username,
             content: m.content,
-            dateadded: m.dateadded
+            dateadded: m.dateadded,
+            seen: m.seen
         }));
 
         res.json(messages);
     })
 );
 
-// Send a message
-app.post(
-    '/api/messages/:threadId',
-    passport.authenticate('jwt', { session: false }),
-    asyncHandler(async (req, res) => {
-        const threadId = Number(req.params.threadId);
-        const senderId = req.user.userid;
-        const { text } = req.body;
 
-        const { data } = await supabase
-            .from('messages')
-            .insert([{ thread_id: threadId, sender_id: senderId, text }])
-            .select('id, sender_id, text, sent_at');
-
-        const sent = data[0];
-        res.json({
-            id: sent.id,
-            senderId: sent.sender_id,
-            senderName: req.user.username,
-            text: sent.text,
-            timestamp: sent.sent_at,
-        });
-    })
-);
 
 
 
@@ -2215,3 +2194,29 @@ app.post(
         });
     })
 );
+
+// POST /api/threads/:threadId/mark-seen
+app.post(
+  '/api/threads/:threadId/mark-seen',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const threadId = Number(req.params.threadId);
+    const me = req.user.userid;
+
+    // Update all messages in this thread NOT sent by me and NOT yet seen
+    const { error } = await supabase
+      .from('messages')
+      .update({ seen: true })
+      .eq('thread_id', threadId)
+      .neq('senderid', me)
+      .eq('seen', false);
+
+    if (error) {
+      console.error('Error marking seen:', error);
+      return res.status(500).json({ error: 'Could not mark messages seen.' });
+    }
+
+    res.json({ success: true });
+  })
+);
+
