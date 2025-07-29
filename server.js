@@ -2220,3 +2220,46 @@ app.post(
   })
 );
 
+
+// ───────────── THREAD LIST ─────────────
+app.get(
+  '/api/threads',
+  passport.authenticate('jwt', { session: false }),
+  asyncHandler(async (req, res) => {
+    const me = req.user.userid;
+
+    // Pull back both sides of each thread
+    const { data: rows, error } = await supabase
+      .from('chat_threads')
+      .select(`
+        id,
+        user_a,
+        user_b,
+        user_a_details: user_a ( userid, username ),
+        user_b_details: user_b ( userid, username )
+      `)
+      .or(`user_a.eq.${me},user_b.eq.${me}`);
+
+    if (error) {
+      console.error('Error fetching threads:', error);
+      return res.status(500).json({ error: 'Could not load threads.' });
+    }
+
+    // Map to just the “other user” side
+    const threads = rows.map(row => {
+      // if I am user_a, then the other party is in user_b_details, otherwise user_a_details
+      const other = row.user_a === me
+        ? row.user_b_details
+        : row.user_a_details;
+
+      return {
+        id:             row.id,
+        otherId:        other.userid,
+        otherUsername:  other.username
+      };
+    });
+
+    res.json(threads);
+  })
+);
+
