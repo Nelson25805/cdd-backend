@@ -2228,38 +2228,41 @@ app.get(
   asyncHandler(async (req, res) => {
     const me = req.user.userid;
 
-    // Pull back both sides of each thread
-    const { data: rows, error } = await supabase
+    // 1️⃣ Fetch all chat_threads involving me, plus each other user's profile
+    const { data, error } = await supabase
       .from('chat_threads')
       .select(`
         id,
         user_a,
         user_b,
-        user_a_details: user_a ( userid, username ),
-        user_b_details: user_b ( userid, username )
+        user_a_user: user_a (
+          userid,
+          username,
+          avatar_url
+        ),
+        user_b_user: user_b (
+          userid,
+          username,
+          avatar_url
+        )
       `)
       .or(`user_a.eq.${me},user_b.eq.${me}`);
 
     if (error) {
       console.error('Error fetching threads:', error);
-      return res.status(500).json({ error: 'Could not load threads.' });
+      return res.status(500).json({ error: 'Database error fetching threads.' });
     }
 
-    // Map to just the “other user” side
-    const threads = rows.map(row => {
-      // if I am user_a, then the other party is in user_b_details, otherwise user_a_details
-      const other = row.user_a === me
-        ? row.user_b_details
-        : row.user_a_details;
-
+    // 2️⃣ Map so each thread reports the OTHER user’s info
+    const threads = (data || []).map(t => {
+      const other = t.user_a === me ? t.user_b_user : t.user_a_user;
       return {
-        id:             row.id,
-        otherId:        other.userid,
-        otherUsername:  other.username
+        id: t.id,
+        otherUsername: other.username,
+        otherAvatar: other.avatar_url
       };
     });
 
     res.json(threads);
   })
 );
-
