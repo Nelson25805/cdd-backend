@@ -2113,11 +2113,7 @@ app.get(
     })
 );
 
-
-
-
-
-// GET /api/threads/:threadId/messages
+// ───────────── Get Conversation Thread ─────────────
 app.get(
     '/api/threads/:threadId/messages',
     passport.authenticate('jwt', { session: false }),
@@ -2141,7 +2137,7 @@ app.get(
     })
 );
 
-// 2) POST a new message into a thread
+// ───────────── Post New Message ─────────────
 app.post(
     '/api/threads/:threadId/messages',
     passport.authenticate('jwt', { session: false }),
@@ -2195,7 +2191,7 @@ app.post(
     })
 );
 
-// POST /api/threads/:threadId/mark-seen
+// ───────────── Messages Marked Seen ─────────────
 app.post(
   '/api/threads/:threadId/mark-seen',
   passport.authenticate('jwt', { session: false }),
