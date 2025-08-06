@@ -1690,9 +1690,7 @@ app.post(
     })
 );
 
-
-
-// Unfriend (delete from friendships)
+// Unfriend / Unfriend a user
 app.delete(
     '/api/friends/:otherId',
     passport.authenticate('jwt', { session: false }),
@@ -1713,7 +1711,6 @@ app.delete(
 );
 
 // DELETE an incoming request (decline)
-// current user = target, param = requester’s id
 app.delete(
     '/api/friends/requests/incoming/:requesterId',
     passport.authenticate('jwt', { session: false }),
@@ -1736,7 +1733,7 @@ app.delete(
     })
 );
 
-// Server: GET /api/friends/requests/incoming
+// Get incoming friend requests
 app.get(
     '/api/friends/requests/incoming',
     passport.authenticate('jwt', { session: false }),
@@ -1772,9 +1769,6 @@ app.get(
         res.json(requests);
     })
 );
-
-
-
 
 // List all your current friends + their chat thread IDs
 app.get(
@@ -1826,8 +1820,6 @@ app.get(
         res.json(friends);
     })
 );
-
-
 
 //
 // ───────────── USER PROFILE & OTHER’S COLLECTION/WISHLIST ─────────────
@@ -1898,7 +1890,6 @@ app.get(
         });
     })
 );
-
 
 // Fetch another user’s collection
 app.get(
