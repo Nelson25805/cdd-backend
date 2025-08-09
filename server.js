@@ -2209,14 +2209,15 @@ app.post(
 
 
 // ───────────── THREAD LIST ─────────────
+// GET /api/threads
 app.get(
   '/api/threads',
   passport.authenticate('jwt', { session: false }),
   asyncHandler(async (req, res) => {
     const me = req.user.userid;
 
-    // 1️⃣ Fetch all chat_threads involving me, plus each other user's profile
-    const { data, error } = await supabase
+    // 1) Fetch threads involving me plus the other user's profile
+    const { data: threadsData, error: threadsErr } = await supabase
       .from('chat_threads')
       .select(`
         id,
@@ -2235,20 +2236,43 @@ app.get(
       `)
       .or(`user_a.eq.${me},user_b.eq.${me}`);
 
-    if (error) {
-      console.error('Error fetching threads:', error);
+    if (threadsErr) {
+      console.error('Error fetching threads:', threadsErr);
       return res.status(500).json({ error: 'Database error fetching threads.' });
     }
 
-    // 2️⃣ Map so each thread reports the OTHER user’s info
-    const threads = (data || []).map(t => {
-      const other = t.user_a === me ? t.user_b_user : t.user_a_user;
-      return {
-        id: t.id,
-        otherUsername: other.username,
-        otherAvatar: other.avatar_url
-      };
-    });
+    // if no threads, return early
+    if (!threadsData || threadsData.length === 0) {
+      return res.json([]);
+    }
+
+    // 2) For each thread compute unseen_count (messages not sent by me and seen = false)
+    //    Use head: true + count: 'exact' to avoid fetching rows.
+    const threads = await Promise.all(
+      threadsData.map(async (t) => {
+        const other = t.user_a === me ? t.user_b_user : t.user_a_user;
+        // count unseen messages for this thread
+        const { count, error: countErr } = await supabase
+          .from('messages')
+          .select('*', { head: true, count: 'exact' })
+          .eq('thread_id', t.id)
+          .neq('senderid', me)
+          .eq('seen', false);
+
+        if (countErr) {
+          console.error(`Error counting unseen for thread ${t.id}:`, countErr);
+        }
+
+        return {
+          id: t.id,
+          otherId: other?.userid ?? null,
+          otherUsername: other?.username ?? 'Unknown',
+          otherAvatar: other?.avatar_url ?? null,
+          unseenCount: Number(count || 0),
+          unseen: (count || 0) > 0
+        };
+      })
+    );
 
     res.json(threads);
   })
