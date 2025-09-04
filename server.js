@@ -1827,65 +1827,93 @@ app.get(
 
 // Public user profile, plus isFriend flag & chatThreadId
 app.get(
-    '/api/users/:userId/profile',
+    '/api/users/:identifier/profile',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const me = req.user.userid;
-        const other = Number(req.params.userId);
+        const viewer = req.user.userid;
+        const identifier = req.params.identifier;
 
-        // 1️⃣ Fetch exactly one user row
-        const { data: u, error: userErr } = await supabase
-            .from('useraccount')
-            .select('userid, username, avatar_url, bio')
-            .eq('userid', other)
-            .single();
-
-        if (userErr) {
-            console.error('Error fetching user profile:', userErr);
-            return res.status(500).json({ error: 'Database error reading user.' });
-        }
-        if (!u) {
-            return res.status(404).json({ error: 'User not found.' });
+        // Reject purely-numeric identifiers — only usernames allowed
+        if (/^\d+$/.test(identifier)) {
+            return res.status(400).json({ error: 'Profiles must be requested by username only.' });
         }
 
-        // 2️⃣ Check friendship count
-        const { count: friCount, error: friErr } = await supabase
-            .from('friendships')
-            .select('*', { count: 'exact' })
-            .or(
-                `and(user_a.eq.${me},user_b.eq.${other}),` +
-                `and(user_a.eq.${other},user_b.eq.${me})`
-            );
+        // 1) Resolve identifier -> numeric user id and profile row
+        let userRow;
+        if (!isNaN(Number(identifier))) {
+            const otherId = Number(identifier);
+            const { data, error } = await supabase
+                .from('useraccount')
+                .select('userid, username, avatar_url, bio')
+                .eq('userid', otherId)
+                .single();
+            if (error || !data) {
+                return res.status(404).json({ error: 'User not found.' });
+            }
+            userRow = data;
+        } else {
+            // assume username; use ilike for case-insensitive match if desired
+            const username = identifier;
+            const { data, error } = await supabase
+                .from('useraccount')
+                .select('userid, username, avatar_url, bio')
+                .ilike('username', username)   // or use eq() if you store normalized usernames
+                .single();
 
-        if (friErr) {
-            console.error('Error checking friendship:', friErr);
-            return res.status(500).json({ error: 'Database error checking friendship.' });
+            if (error || !data) {
+                return res.status(404).json({ error: 'User not found.' });
+            }
+            userRow = data;
         }
 
-        // 3️⃣ Look up (or create) a chat thread
+        const other = userRow.userid;
+
+        // 2) Check friendship count (owner always allowed)
+        if (viewer !== other) {
+            const { count: friCount, error: friErr } = await supabase
+                .from('friendships')
+                .select('*', { count: 'exact' })
+                .or(
+                    `and(user_a.eq.${viewer},user_b.eq.${other}),` +
+                    `and(user_a.eq.${other},user_b.eq.${viewer})`
+                );
+
+            if (friErr) {
+                console.error('Error checking friendship:', friErr);
+                return res.status(500).json({ error: 'Database error checking friendship.' });
+            }
+
+            const isFriend = (friCount || 0) > 0;
+            if (!isFriend) {
+                return res.status(403).json({ error: 'You must be friends with this user to view their profile.' });
+            }
+        }
+
+        // 3) Look up (or find) a chat thread (either direction)
         let threadId = null;
         const { data: thread, error: threadErr } = await supabase
             .from('chat_threads')
             .select('id')
             .or(
-                `and(user_a.eq.${me},user_b.eq.${other}),` +
-                `and(user_a.eq.${other},user_b.eq.${me})`
+                `and(user_a.eq.${viewer},user_b.eq.${other}),` +
+                `and(user_a.eq.${other},user_b.eq.${viewer})`
             )
-            .single();
+            .limit(1)
+            .maybeSingle();
 
-        if (threadErr && threadErr.code !== 'PGRST116') { // 116 = no rows
+        if (threadErr && threadErr.code !== 'PGRST116') {
             console.error('Error fetching chat thread:', threadErr);
             return res.status(500).json({ error: 'Database error fetching chat thread.' });
         }
         threadId = thread?.id ?? null;
 
-        // 4️⃣ Return the combined profile
+        // 4) Return profile (do NOT expose sensitive fields)
         res.json({
-            id: u.userid,
-            username: u.username,
-            avatar: u.avatar_url,
-            bio: u.bio,
-            isFriend: (friCount || 0) > 0,
+            id: userRow.userid,
+            username: userRow.username,
+            avatar: userRow.avatar_url,
+            bio: userRow.bio,
+            isFriend: viewer === other ? true : true, // we already blocked non-friends earlier
             chatThreadId: threadId,
         });
     })
@@ -2144,7 +2172,7 @@ app.post(
                 [{
                     thread_id: threadId,
                     senderid: senderId,
-                    receiverid,           
+                    receiverid,
                     content: text
                 }],
                 { returning: 'representation' }
@@ -2184,42 +2212,42 @@ app.post(
 
 // ───────────── Messages Marked Seen ─────────────
 app.post(
-  '/api/threads/:threadId/mark-seen',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const threadId = Number(req.params.threadId);
-    const me = req.user.userid;
+    '/api/threads/:threadId/mark-seen',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const threadId = Number(req.params.threadId);
+        const me = req.user.userid;
 
-    // Update all messages in this thread NOT sent by me and NOT yet seen
-    const { error } = await supabase
-      .from('messages')
-      .update({ seen: true })
-      .eq('thread_id', threadId)
-      .neq('senderid', me)
-      .eq('seen', false);
+        // Update all messages in this thread NOT sent by me and NOT yet seen
+        const { error } = await supabase
+            .from('messages')
+            .update({ seen: true })
+            .eq('thread_id', threadId)
+            .neq('senderid', me)
+            .eq('seen', false);
 
-    if (error) {
-      console.error('Error marking seen:', error);
-      return res.status(500).json({ error: 'Could not mark messages seen.' });
-    }
+        if (error) {
+            console.error('Error marking seen:', error);
+            return res.status(500).json({ error: 'Could not mark messages seen.' });
+        }
 
-    res.json({ success: true });
-  })
+        res.json({ success: true });
+    })
 );
 
 
 // ───────────── THREAD LIST ─────────────
 // GET /api/threads
 app.get(
-  '/api/threads',
-  passport.authenticate('jwt', { session: false }),
-  asyncHandler(async (req, res) => {
-    const me = req.user.userid;
+    '/api/threads',
+    passport.authenticate('jwt', { session: false }),
+    asyncHandler(async (req, res) => {
+        const me = req.user.userid;
 
-    // 1) Fetch threads involving me plus the other user's profile
-    const { data: threadsData, error: threadsErr } = await supabase
-      .from('chat_threads')
-      .select(`
+        // 1) Fetch threads involving me plus the other user's profile
+        const { data: threadsData, error: threadsErr } = await supabase
+            .from('chat_threads')
+            .select(`
         id,
         user_a,
         user_b,
@@ -2234,46 +2262,46 @@ app.get(
           avatar_url
         )
       `)
-      .or(`user_a.eq.${me},user_b.eq.${me}`);
+            .or(`user_a.eq.${me},user_b.eq.${me}`);
 
-    if (threadsErr) {
-      console.error('Error fetching threads:', threadsErr);
-      return res.status(500).json({ error: 'Database error fetching threads.' });
-    }
-
-    // if no threads, return early
-    if (!threadsData || threadsData.length === 0) {
-      return res.json([]);
-    }
-
-    // 2) For each thread compute unseen_count (messages not sent by me and seen = false)
-    //    Use head: true + count: 'exact' to avoid fetching rows.
-    const threads = await Promise.all(
-      threadsData.map(async (t) => {
-        const other = t.user_a === me ? t.user_b_user : t.user_a_user;
-        // count unseen messages for this thread
-        const { count, error: countErr } = await supabase
-          .from('messages')
-          .select('*', { head: true, count: 'exact' })
-          .eq('thread_id', t.id)
-          .neq('senderid', me)
-          .eq('seen', false);
-
-        if (countErr) {
-          console.error(`Error counting unseen for thread ${t.id}:`, countErr);
+        if (threadsErr) {
+            console.error('Error fetching threads:', threadsErr);
+            return res.status(500).json({ error: 'Database error fetching threads.' });
         }
 
-        return {
-          id: t.id,
-          otherId: other?.userid ?? null,
-          otherUsername: other?.username ?? 'Unknown',
-          otherAvatar: other?.avatar_url ?? null,
-          unseenCount: Number(count || 0),
-          unseen: (count || 0) > 0
-        };
-      })
-    );
+        // if no threads, return early
+        if (!threadsData || threadsData.length === 0) {
+            return res.json([]);
+        }
 
-    res.json(threads);
-  })
+        // 2) For each thread compute unseen_count (messages not sent by me and seen = false)
+        //    Use head: true + count: 'exact' to avoid fetching rows.
+        const threads = await Promise.all(
+            threadsData.map(async (t) => {
+                const other = t.user_a === me ? t.user_b_user : t.user_a_user;
+                // count unseen messages for this thread
+                const { count, error: countErr } = await supabase
+                    .from('messages')
+                    .select('*', { head: true, count: 'exact' })
+                    .eq('thread_id', t.id)
+                    .neq('senderid', me)
+                    .eq('seen', false);
+
+                if (countErr) {
+                    console.error(`Error counting unseen for thread ${t.id}:`, countErr);
+                }
+
+                return {
+                    id: t.id,
+                    otherId: other?.userid ?? null,
+                    otherUsername: other?.username ?? 'Unknown',
+                    otherAvatar: other?.avatar_url ?? null,
+                    unseenCount: Number(count || 0),
+                    unseen: (count || 0) > 0
+                };
+            })
+        );
+
+        res.json(threads);
+    })
 );
