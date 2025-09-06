@@ -1826,7 +1826,6 @@ app.get(
 //
 
 // Public user profile, plus isFriend flag & chatThreadId
-// GET /api/users/:identifier/profile
 app.get(
     '/api/users/:identifier/profile',
     passport.authenticate('jwt', { session: false }),
@@ -1895,16 +1894,30 @@ app.get(
 );
 
 
-// Fetch another user’s collection
+// Fetch another user’s collection (lookup by username, not numeric id)
 app.get(
     '/api/users/:userId/collection',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const other = Number(req.params.userId);
+        const identifier = req.params.userId; // treated as username
 
-        // reuse your existing logic: fetch from vgcollection, join gameinfo and consoles
-        // example simplest form:
-        const { data } = await supabase
+        // 1) Resolve username -> numeric userid
+        const { data: u, error: uErr } = await supabase
+            .from('useraccount')
+            .select('userid, username')
+            .ilike('username', identifier)
+            .maybeSingle();
+
+        if (uErr) {
+            console.error('Error resolving username:', uErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
+        }
+        if (!u) return res.status(404).json({ error: 'User not found.' });
+
+        const other = u.userid;
+
+        // 2) fetch collection rows
+        const { data, error } = await supabase
             .from('vgcollection')
             .select(`
         gameid,
@@ -1913,26 +1926,49 @@ app.get(
       `)
             .eq('userid', other);
 
-        // map to the shape your frontend expects
-        const results = data.map(row => ({
+        if (error) {
+            console.error('Error fetching vgcollection rows:', error);
+            return res.status(500).json({ error: 'Database error fetching collection.' });
+        }
+
+        // map to the shape your frontend expects (defensive)
+        const results = (data || []).map(row => ({
             GameId: row.gameid,
-            Name: row.gameinfo.name,
-            CoverArt: row.gameinfo.coverart,
-            Consoles: row.vgcollection_console.map(c => c.console),
+            Name: row.gameinfo?.name ?? null,
+            CoverArt: row.gameinfo?.coverart ?? null,
+            Consoles: Array.isArray(row.vgcollection_console)
+                ? row.vgcollection_console.map(c => c.console)
+                : []
         }));
 
         res.json(results);
     })
 );
 
-// Fetch another user’s wishlist
+
+// Fetch another user’s wishlist (lookup by username)
 app.get(
     '/api/users/:userId/wishlist',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const other = Number(req.params.userId);
+        const identifier = req.params.userId;
 
-        const { data } = await supabase
+        // resolve username -> id
+        const { data: u, error: uErr } = await supabase
+            .from('useraccount')
+            .select('userid, username')
+            .ilike('username', identifier)
+            .maybeSingle();
+
+        if (uErr) {
+            console.error('Error resolving username for wishlist:', uErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
+        }
+        if (!u) return res.status(404).json({ error: 'User not found.' });
+
+        const other = u.userid;
+
+        const { data, error } = await supabase
             .from('vgwishlist')
             .select(`
         gameid,
@@ -1941,11 +1977,18 @@ app.get(
       `)
             .eq('userid', other);
 
-        const results = data.map(row => ({
+        if (error) {
+            console.error('Error fetching vgwishlist rows:', error);
+            return res.status(500).json({ error: 'Database error fetching wishlist.' });
+        }
+
+        const results = (data || []).map(row => ({
             GameId: row.gameid,
-            Name: row.gameinfo.name,
-            CoverArt: row.gameinfo.coverart,
-            Consoles: row.vgwishlist_console.map(c => c.console),
+            Name: row.gameinfo?.name ?? null,
+            CoverArt: row.gameinfo?.coverart ?? null,
+            Consoles: Array.isArray(row.vgwishlist_console)
+                ? row.vgwishlist_console.map(c => c.console)
+                : []
         }));
 
         res.json(results);
@@ -1953,32 +1996,56 @@ app.get(
 );
 
 
+
 // GET all incoming friend-requests for a given user (pending)
+// username -> userid resolution, then query friend_requests.target_id = userid
 app.get(
     '/api/users/:userId/requests/incoming',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const other = Number(req.params.userId);
+        const identifier = req.params.userId;
 
-        // fetch requester_id rows where target = other
+        const { data: u, error: uErr } = await supabase
+            .from('useraccount')
+            .select('userid, username, avatar_url')
+            .ilike('username', identifier)
+            .maybeSingle();
+
+        if (uErr) {
+            console.error('Error resolving username for incoming requests:', uErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
+        }
+        if (!u) return res.status(404).json({ error: 'User not found.' });
+
+        const other = u.userid;
+
         const { data: rows, error } = await supabase
             .from('friend_requests')
             .select('requester_id, created_at')
             .eq('target_id', other);
 
-        if (error) return res.status(500).json({ error: error.message });
+        if (error) {
+            console.error('Error fetching friend_requests incoming:', error);
+            return res.status(500).json({ error: 'Database error fetching friend requests.' });
+        }
 
         const incoming = await Promise.all(
-            rows.map(async ({ requester_id, created_at }) => {
-                const { data: u } = await supabase
+            (rows || []).map(async ({ requester_id, created_at }) => {
+                const { data: requester, error: requesterErr } = await supabase
                     .from('useraccount')
                     .select('userid, username, avatar_url')
                     .eq('userid', requester_id)
-                    .single();
+                    .maybeSingle();
+
+                if (requesterErr) {
+                    console.error('Error fetching requester user:', requesterErr);
+                    return { id: requester_id, username: null, avatar: null, sentAt: created_at };
+                }
+
                 return {
-                    id: u.userid,
-                    username: u.username,
-                    avatar: u.avatar_url,
+                    id: requester?.userid ?? requester_id,
+                    username: requester?.username ?? null,
+                    avatar: requester?.avatar_url ?? null,
                     sentAt: created_at
                 };
             })
@@ -1988,32 +2055,55 @@ app.get(
     })
 );
 
-// GET all outgoing friend-requests for a given user (pending)
+
+// GET outgoing friend-requests for a given user (pending)
 app.get(
     '/api/users/:userId/requests/outgoing',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const other = Number(req.params.userId);
+        const identifier = req.params.userId;
 
-        // fetch target_id rows where requester = other
+        const { data: u, error: uErr } = await supabase
+            .from('useraccount')
+            .select('userid, username, avatar_url')
+            .ilike('username', identifier)
+            .maybeSingle();
+
+        if (uErr) {
+            console.error('Error resolving username for outgoing requests:', uErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
+        }
+        if (!u) return res.status(404).json({ error: 'User not found.' });
+
+        const other = u.userid;
+
         const { data: rows, error } = await supabase
             .from('friend_requests')
             .select('target_id, created_at')
             .eq('requester_id', other);
 
-        if (error) return res.status(500).json({ error: error.message });
+        if (error) {
+            console.error('Error fetching friend_requests outgoing:', error);
+            return res.status(500).json({ error: 'Database error fetching friend requests.' });
+        }
 
         const outgoing = await Promise.all(
-            rows.map(async ({ target_id, created_at }) => {
-                const { data: u } = await supabase
+            (rows || []).map(async ({ target_id, created_at }) => {
+                const { data: target, error: targetErr } = await supabase
                     .from('useraccount')
                     .select('userid, username, avatar_url')
                     .eq('userid', target_id)
-                    .single();
+                    .maybeSingle();
+
+                if (targetErr) {
+                    console.error('Error fetching target user:', targetErr);
+                    return { id: target_id, username: null, avatar: null, sentAt: created_at };
+                }
+
                 return {
-                    id: u.userid,
-                    username: u.username,
-                    avatar: u.avatar_url,
+                    id: target?.userid ?? target_id,
+                    username: target?.username ?? null,
+                    avatar: target?.avatar_url ?? null,
                     sentAt: created_at
                 };
             })
@@ -2023,32 +2113,56 @@ app.get(
     })
 );
 
-// GET all accepted friends for a given user
+
+// GET accepted friends for a given user (resolve username -> userid)
 app.get(
     '/api/users/:userId/friends',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const other = Number(req.params.userId);
+        const identifier = req.params.userId;
+
+        const { data: u, error: uErr } = await supabase
+            .from('useraccount')
+            .select('userid, username, avatar_url')
+            .ilike('username', identifier)
+            .maybeSingle();
+
+        if (uErr) {
+            console.error('Error resolving username for friends:', uErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
+        }
+        if (!u) return res.status(404).json({ error: 'User not found.' });
+
+        const other = u.userid;
 
         const { data: rows, error } = await supabase
             .from('friendships')
             .select('user_a, user_b, created_at')
             .or(`user_a.eq.${other},user_b.eq.${other}`);
 
-        if (error) return res.status(500).json({ error: error.message });
+        if (error) {
+            console.error('Error fetching friendships:', error);
+            return res.status(500).json({ error: 'Database error fetching friends.' });
+        }
 
         const friends = await Promise.all(
-            rows.map(async ({ user_a, user_b, created_at }) => {
+            (rows || []).map(async ({ user_a, user_b, created_at }) => {
                 const peer = user_a === other ? user_b : user_a;
-                const { data: u } = await supabase
+                const { data: urow, error: urowErr } = await supabase
                     .from('useraccount')
                     .select('userid, username, avatar_url')
                     .eq('userid', peer)
-                    .single();
+                    .maybeSingle();
+
+                if (urowErr) {
+                    console.error('Error fetching friend profile:', urowErr);
+                    return { id: peer, username: null, avatar: null, friendedAt: created_at };
+                }
+
                 return {
-                    id: u.userid,
-                    username: u.username,
-                    avatar: u.avatar_url,
+                    id: urow?.userid ?? peer,
+                    username: urow?.username ?? null,
+                    avatar: urow?.avatar_url ?? null,
                     friendedAt: created_at
                 };
             })
@@ -2057,6 +2171,7 @@ app.get(
         res.json(friends);
     })
 );
+
 
 
 
