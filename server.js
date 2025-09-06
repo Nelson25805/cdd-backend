@@ -1826,98 +1826,74 @@ app.get(
 //
 
 // Public user profile, plus isFriend flag & chatThreadId
+// GET /api/users/:identifier/profile
 app.get(
     '/api/users/:identifier/profile',
     passport.authenticate('jwt', { session: false }),
     asyncHandler(async (req, res) => {
-        const viewer = req.user.userid;
-        const identifier = req.params.identifier;
+        const me = req.user.userid;
+        const identifier = req.params.identifier; // treated strictly as USERNAME
 
-        // Reject purely-numeric identifiers — only usernames allowed
-        if (/^\d+$/.test(identifier)) {
-            return res.status(400).json({ error: 'Profiles must be requested by username only.' });
+        // 1) Lookup by username only (case-insensitive)
+        const { data: userRow, error: userErr } = await supabase
+            .from('useraccount')
+            .select('userid, username, avatar_url, bio')
+            .ilike('username', identifier)   // case-insensitive exact match
+            .maybeSingle();
+
+        if (userErr) {
+            console.error('Error fetching user by username:', userErr);
+            return res.status(500).json({ error: 'Database error reading user.' });
         }
 
-        // 1) Resolve identifier -> numeric user id and profile row
-        let userRow;
-        if (!isNaN(Number(identifier))) {
-            const otherId = Number(identifier);
-            const { data, error } = await supabase
-                .from('useraccount')
-                .select('userid, username, avatar_url, bio')
-                .eq('userid', otherId)
-                .single();
-            if (error || !data) {
-                return res.status(404).json({ error: 'User not found.' });
-            }
-            userRow = data;
-        } else {
-            // assume username; use ilike for case-insensitive match if desired
-            const username = identifier;
-            const { data, error } = await supabase
-                .from('useraccount')
-                .select('userid, username, avatar_url, bio')
-                .ilike('username', username)   // or use eq() if you store normalized usernames
-                .single();
-
-            if (error || !data) {
-                return res.status(404).json({ error: 'User not found.' });
-            }
-            userRow = data;
+        if (!userRow) {
+            // IMPORTANT: do NOT fall back to numeric id lookup. Return 404.
+            return res.status(404).json({ error: 'User not found.' });
         }
 
         const other = userRow.userid;
 
-        // 2) Check friendship count (owner always allowed)
-        if (viewer !== other) {
-            const { count: friCount, error: friErr } = await supabase
-                .from('friendships')
-                .select('*', { count: 'exact' })
-                .or(
-                    `and(user_a.eq.${viewer},user_b.eq.${other}),` +
-                    `and(user_a.eq.${other},user_b.eq.${viewer})`
-                );
+        // 2) Check friendship count (optional; used for UI affordances)
+        const { count: friCount, error: friErr } = await supabase
+            .from('friendships')
+            .select('*', { count: 'exact' })
+            .or(
+                `and(user_a.eq.${me},user_b.eq.${other}),` +
+                `and(user_a.eq.${other},user_b.eq.${me})`
+            );
 
-            if (friErr) {
-                console.error('Error checking friendship:', friErr);
-                return res.status(500).json({ error: 'Database error checking friendship.' });
-            }
-
-            const isFriend = (friCount || 0) > 0;
-            if (!isFriend) {
-                return res.status(403).json({ error: 'You must be friends with this user to view their profile.' });
-            }
+        if (friErr) {
+            console.error('Error checking friendship:', friErr);
+            return res.status(500).json({ error: 'Database error checking friendship.' });
         }
 
-        // 3) Look up (or find) a chat thread (either direction)
-        let threadId = null;
+        // 3) Find chat thread (if any)
         const { data: thread, error: threadErr } = await supabase
             .from('chat_threads')
             .select('id')
             .or(
-                `and(user_a.eq.${viewer},user_b.eq.${other}),` +
-                `and(user_a.eq.${other},user_b.eq.${viewer})`
+                `and(user_a.eq.${me},user_b.eq.${other}),` +
+                `and(user_a.eq.${other},user_b.eq.${me})`
             )
-            .limit(1)
             .maybeSingle();
 
-        if (threadErr && threadErr.code !== 'PGRST116') {
+        if (threadErr) {
             console.error('Error fetching chat thread:', threadErr);
             return res.status(500).json({ error: 'Database error fetching chat thread.' });
         }
-        threadId = thread?.id ?? null;
 
-        // 4) Return profile (do NOT expose sensitive fields)
+        // 4) Return canonical profile (includes numeric id so client can fetch other endpoints)
         res.json({
             id: userRow.userid,
             username: userRow.username,
             avatar: userRow.avatar_url,
             bio: userRow.bio,
-            isFriend: viewer === other ? true : true, // we already blocked non-friends earlier
-            chatThreadId: threadId,
+            isFriend: (friCount || 0) > 0,
+            chatThreadId: thread?.id ?? null
         });
     })
 );
+
 
 // Fetch another user’s collection
 app.get(
